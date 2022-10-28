@@ -1,0 +1,50 @@
+import datetime
+import sys
+import os
+import uuid
+
+from wowahf.cfg.JsonConfig import JsonConfig
+from wowahf.cfg.VaultConfig import VaultConfig
+from wowahf.utils.logger import get_logger, setdebug
+
+start_time = datetime.datetime.now()
+VERSION = "0.0.1"
+startup_parameter = ""
+vault_obj = None
+
+if "DEBUG" in os.environ or os.name == "nt":
+    if os.name == "nt" or os.environ["DEBUG"]:
+        setdebug()
+
+if len(sys.argv) > 1:
+    startup_parameter = sys.argv[1]
+
+cfg_provider = None
+
+if startup_parameter:
+    cfg_provider = VaultConfig(startup_parameter)
+else:
+    cfg_provider = JsonConfig()
+
+logger = get_logger()
+logger.info("Starting WoW-AHF v.{} ...".format(VERSION))
+run_uuid = str(uuid.uuid4())
+logger.info("Run id is: {}".format(run_uuid))
+
+from wowahf.db.db import initialize, get_transaction
+
+initialize()
+
+session, session_transaction = get_transaction()
+
+from wowahf.db.models.Run import Run
+
+with session_transaction:
+    session.add(Run(
+        start_time=start_time,
+        uuid=run_uuid
+    ))
+from wowahf.parser.auction_fetcher import get_auctions, populate_database
+
+auction_data = get_auctions()
+populate_database(auction_data)
