@@ -8,7 +8,7 @@ from wowahf.cfg.VaultConfig import VaultConfig
 from wowahf.utils.logger import get_logger, setdebug
 
 start_time = datetime.datetime.now()
-VERSION = "0.0.1"
+VERSION = "0.0.1a"
 startup_parameter = ""
 vault_obj = None
 
@@ -42,7 +42,8 @@ from wowahf.db.models.Run import Run
 with session_transaction:
     session.add(Run(
         start_time=start_time,
-        uuid=run_uuid
+        uuid=run_uuid,
+        wowahf_version=VERSION
     ))
 from wowahf.parser.auction_fetcher import get_auctions, populate_database
 

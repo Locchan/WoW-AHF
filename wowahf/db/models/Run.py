@@ -12,3 +12,4 @@ class Run(Base):
     errors = Column(Integer)
     entries_processed = Column(Integer)
     items_added = Column(Integer)
+    wowahf_version = Column(VARCHAR(8), nullable=False)

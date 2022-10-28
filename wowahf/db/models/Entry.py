@@ -4,7 +4,9 @@ from wowahf.db.db import Base
 
 class Entry(Base):
     __tablename__ = 'entries'
-
+    __table_args__ = {
+        'mysql_row_format': 'COMPRESSED'
+    }
     id = Column(Integer, nullable=False, autoincrement=True, primary_key=True)
     entry_id = Column(Integer, nullable=False, primary_key=True)
     item_id = Column(Integer, primary_key=True)
