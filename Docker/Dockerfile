@@ -8,6 +8,6 @@ ADD setup.py /opt/
 ADD Docker/_build.sh /opt
 RUN set -e && /bin/bash /opt/_build.sh
 RUN ln -sf /usr/share/zoneinfo/Europe/Minsk /etc/localtime
-RUN printf "#!/bin/sh\nwowahf.py ${VAULT_PATH}" > /bin/start_ahf && chmod +x /bin/start_ahf
+RUN printf "#!/bin/sh\nwowahf ${VAULT_PATH}" > /bin/start_ahf.sh && chmod +x /bin/start_ahf.sh
 
-ENTRYPOINT /bin/start_ahf
+ENTRYPOINT /bin/start_ahf.sh

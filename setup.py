@@ -1,18 +1,19 @@
 from setuptools import setup
 
 setup(
-    name='wow-ahf',
-    version='0.0.1a',
-    packages=['wowahf'],
-    url='',
+    name='wowahf',
+    version='0.1.0',
+    packages=['wowahf', 'wowahf.cfg', 'wowahf.db', 'wowahf.db.models','wowahf.parser', 'wowahf.utils'],
+    url='https://github.com/Locchan/WoW-AHF',
     license='',
     author='Locchan',
     author_email='locchan@protonmail.com',
     description='Auction data gatherer for WoW',
-    scripts=['wowahf/wowahf.py'],
+    scripts=['wowahf/wowahf'],
     install_requires=[
         'python-blizzardapi',
         'mysql-connector-python',
-        'sqlalchemy'
+        'sqlalchemy',
+        'hvac==0.11.2'
     ]
 )
