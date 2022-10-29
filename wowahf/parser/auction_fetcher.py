@@ -132,10 +132,17 @@ def populate_database(auction_data):
         current_run.items_added = items_added
 
         logger.info("Running post-run SQL...")
-        with get_connection() as con:
-            for aquery in after_run_sql:
-                logger.info("Executing: {}".format(aquery))
-                con.execute(aquery)
-
+        try:
+            with get_connection() as con:
+                for aquery in after_run_sql:
+                    logger.info("Executing: {}".format(aquery))
+                    try:
+                        con.execute(aquery)
+                    except Exception as e:
+                        logger.error("Error while executing SQL!")
+                        logger.exception(e)
+        except Exception as e:
+            logger.error("Error while connecting to database to execute raw SQL!")
+            logger.exception(e)
         logger.info("Finished!")
 
