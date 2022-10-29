@@ -6,5 +6,5 @@ class Auction(Base):
     __tablename__ = 'auctions'
 
     id = Column(Integer, nullable=False, autoincrement=True, primary_key=True)
-    auc_id = Column(Integer, nullable=False)
+    auc_id = Column(Integer, nullable=False, unique=True, primary_key=True)
     name = Column(VARCHAR(32), nullable=False)

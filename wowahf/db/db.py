@@ -27,7 +27,7 @@ def initialize():
             database=database
         ))
         Base = declarative_base()
-        session_generator = scoped_session(sessionmaker(bind=engine.execution_options(isolation_level='AUTOCOMMIT'), future=True))
+        session_generator = scoped_session(sessionmaker(bind=engine.execution_options(isolation_level='SERIALIZABLE'), autoflush=False))
         import wowahf.db.models
         Base.metadata.create_all(bind=engine)
     except Exception as e:

@@ -8,7 +8,7 @@ class Run(Base):
     id = Column(Integer, nullable=False, autoincrement=True, primary_key=True)
     start_time = Column(DateTime, nullable=False)
     end_time = Column(DateTime)
-    uuid = Column(VARCHAR(64), nullable=False)
+    uuid = Column(VARCHAR(64), nullable=False, unique=True, primary_key=True)
     errors = Column(Integer)
     entries_processed = Column(Integer)
     items_added = Column(Integer)

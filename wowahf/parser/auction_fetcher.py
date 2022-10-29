@@ -65,25 +65,27 @@ def add_auctions(auction_data):
                 ))
 
 
-def add_item(item_id, session):
+def add_item(item_id):
     global items_added, errors
-    try:
-        item_obj = blizzard_connection.wow.game_data.get_item(region, locale, item_id, is_classic=classic)
-        session.add(Item(
-            item_id=item_obj["id"],
-            name=item_obj["name"],
-            quality=item_obj["quality"]["type"],
-            item_class=item_obj["item_class"]["name"],
-            item_subclass=item_obj["item_subclass"]["name"],
-            vendor_buy=item_obj["purchase_price"],
-            vendor_sell=item_obj["sell_price"],
-            level=item_obj["level"],
-        ))
-        logger.info("A new item was added: \"{}\" (id: {})".format(item_obj["name"], item_id))
-        items_added += 1
-    except Exception as e:
-        logger.exception(e)
-        errors += 1
+    session, session_transaction = get_transaction()
+    with session_transaction:
+        try:
+            item_obj = blizzard_connection.wow.game_data.get_item(region, locale, item_id, is_classic=classic)
+            session.add(Item(
+                item_id=item_obj["id"],
+                name=item_obj["name"],
+                quality=item_obj["quality"]["type"],
+                item_class=item_obj["item_class"]["name"],
+                item_subclass=item_obj["item_subclass"]["name"],
+                vendor_buy=item_obj["purchase_price"],
+                vendor_sell=item_obj["sell_price"],
+                level=item_obj["level"],
+            ))
+            logger.info("A new item was added: \"{}\" (id: {})".format(item_obj["name"], item_id))
+            items_added += 1
+        except Exception as e:
+            logger.exception(e)
+            errors += 1
 
 
 def populate_database(auction_data):
@@ -98,15 +100,15 @@ def populate_database(auction_data):
                 item_id = anitem["item"]["id"]
                 item = session.query(Item).filter_by(item_id=item_id).first()
                 if item is None:
-                    add_item(item_id, session)
-                auc_id = anitem["id"]
-                logger.debug("Adding auction data for auction {}".format(auc_id))
-
+                    add_item(item_id)
                 # Add auction entry
+                auction_entry_id = anitem["id"]
+                logger.debug("Adding auction data for auction {}".format(auction_entry_id))
                 try:
                     session.add(Entry(
                         item_id=item_id,
-                        entry_id=auc_id,
+                        entry_id=auction_entry_id,
+                        auction=anauc_id,
                         bid=anitem["bid"],
                         buyout=anitem["buyout"],
                         quantity=anitem["quantity"],
