@@ -2,6 +2,7 @@ import datetime
 from blizzardapi import BlizzardApi
 from __main__ import logger, cfg_provider, run_uuid
 
+import sqlalchemy
 from wowahf.db.db import get_transaction, get_connection, database
 from wowahf.db.models import Auction, Item, Entry
 from wowahf.db.models.Run import Run
@@ -137,7 +138,7 @@ def populate_database(auction_data):
                 for aquery in after_run_sql:
                     logger.info("Executing: {}".format(aquery))
                     try:
-                        con.execute(aquery)
+                        con.execute(sqlalchemy.text(aquery))
                     except Exception as e:
                         logger.error("Error while executing SQL!")
                         logger.exception(e)

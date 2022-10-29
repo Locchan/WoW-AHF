@@ -9,7 +9,7 @@ from wowahf.cfg.VaultConfig import VaultConfig
 from wowahf.utils.logger import get_logger, setdebug
 
 start_time = datetime.datetime.now()
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 startup_parameter = ""
 vault_obj = None
 
