@@ -1,11 +1,14 @@
 import datetime
-import json
 from blizzardapi import BlizzardApi
 from __main__ import logger, cfg_provider, run_uuid
 
-from wowahf.db.db import get_session, get_transaction
+from wowahf.db.db import get_transaction, get_connection, database
 from wowahf.db.models import Auction, Item, Entry
 from wowahf.db.models.Run import Run
+
+after_run_sql = [
+    "CALL {}.post_parser_run(0)".format(database)
+]
 
 blizzard_connection = None
 realm = cfg_provider.get("REALM")
@@ -120,10 +123,19 @@ def populate_database(auction_data):
                     logger.exception(e)
                     errors += 1
 
+        logger.info("Writing run data to the database...")
         # Run report
         current_run = session.query(Run).filter_by(uuid=run_uuid).first()
         current_run.end_time = datetime.datetime.now()
         current_run.errors = errors
         current_run.entries_processed = entries_processed
         current_run.items_added = items_added
+
+        logger.info("Running post-run SQL...")
+        with get_connection() as con:
+            for aquery in after_run_sql:
+                logger.info("Executing: {}".format(aquery))
+                con.execute(aquery)
+
+        logger.info("Finished!")
 
