@@ -3,13 +3,13 @@ from blizzardapi import BlizzardApi
 from __main__ import logger, cfg_provider, run_uuid
 
 import sqlalchemy
-from wowahf.db.db import get_transaction, get_connection, database
+from wowahf.db.db import get_transaction, get_connection, database, call_procedure
 from wowahf.db.models import Auction, Item, Entry
 from wowahf.db.models.Run import Run
 
-after_run_sql = [
-    "CALL {}.post_parser_run(0)".format(database)
-]
+post_run_procedures = {
+    "v2_post_parser_run": []
+}
 
 blizzard_connection = None
 realm = cfg_provider.get("REALM")
@@ -69,85 +69,99 @@ def add_auctions(auction_data):
                 ))
 
 
-def add_item(item_id):
-    global items_added, errors
+def add_new_items(auction_data):
+    logger.info("Getting all items from database...")
+    known_item_ids = []
+    items_to_add = []
     session, session_transaction = get_transaction()
     with session_transaction:
-        try:
-            item_obj = blizzard_connection.wow.game_data.get_item(region, locale, item_id, is_classic=classic)
-            session.add(Item(
-                item_id=item_obj["id"],
-                name=item_obj["name"],
-                quality=item_obj["quality"]["type"],
-                item_class=item_obj["item_class"]["name"],
-                item_subclass=item_obj["item_subclass"]["name"],
-                vendor_buy=item_obj["purchase_price"],
-                vendor_sell=item_obj["sell_price"],
-                level=item_obj["level"],
-            ))
-            logger.info("A new item was added: \"{}\" (id: {})".format(item_obj["name"], item_id))
-            items_added += 1
-        except Exception as e:
-            logger.exception(e)
-            errors += 1
+        known_item_ids = [x[0] for x in session.query(Item.item_id).all()]
+    logger.info("Database has {} items.".format(len(known_item_ids)))
+    for anauc_id, anauc in auction_data.items():
+        for anitem in anauc["data"]:
+            item_id = anitem["item"]["id"]
+            if item_id not in known_item_ids and item_id not in items_to_add:
+                items_to_add.append(item_id)
+    logger.info("{} new items will be added...".format(len(items_to_add)))
+    session, session_transaction = get_transaction()
+    with session_transaction:
+        for anitem in items_to_add:
+            add_item(anitem, session)
+
+
+def add_item(item_id, session):
+    global items_added, errors
+    try:
+        item_obj = blizzard_connection.wow.game_data.get_item(region, locale, item_id, is_classic=classic)
+        session.add(Item(
+            item_id=item_obj["id"],
+            name=item_obj["name"],
+            quality=item_obj["quality"]["type"],
+            item_class=item_obj["item_class"]["name"],
+            item_subclass=item_obj["item_subclass"]["name"],
+            vendor_buy=item_obj["purchase_price"],
+            vendor_sell=item_obj["sell_price"],
+            level=item_obj["level"],
+        ))
+        logger.info("A new item was added: \"{}\" (id: {})".format(item_obj["name"], item_id))
+        items_added += 1
+    except Exception as e:
+        logger.exception(e)
+        logger.warning("Could not add an item: Item ID: {}; Blizzard DB response:\n{}".format(item_id, item_obj))
+        errors += 1
 
 
 def populate_database(auction_data):
     global entries_processed, errors
     add_auctions(auction_data)
+    add_new_items(auction_data)
     session, session_transaction = get_transaction()
+    logger.info("Adding auction lots...")
     with session_transaction:
         for anauc_id, anauc in auction_data.items():
             logger.info("Parsing auction \"{}\"...".format(anauc["name"]))
             for anitem in anauc["data"]:
-                # Add item to database if it does not exist
-                item_id = anitem["item"]["id"]
-                item = session.query(Item).filter_by(item_id=item_id).first()
-                if item is None:
-                    add_item(item_id)
                 # Add auction entry
                 auction_entry_id = anitem["id"]
                 logger.debug("Adding auction data for auction {}".format(auction_entry_id))
                 try:
                     session.add(Entry(
-                        item_id=item_id,
+                        item_id=anitem["item"]["id"],
                         entry_id=auction_entry_id,
                         auction=anauc_id,
                         bid=anitem["bid"],
                         buyout=anitem["buyout"],
                         quantity=anitem["quantity"],
                         time_left=anitem["time_left"],
-                        run_uuid=run_uuid
                     ))
                     entries_processed += 1
                 except Exception as e:
                     logger.exception(e)
                     errors += 1
+        logger.info("Done. Completing transaction...")
 
-        logger.info("Writing run data to the database...")
 
-        logger.info("Running post-run SQL...")
-        try:
-            with get_connection() as con:
-                for aquery in after_run_sql:
-                    logger.info("Executing: {}".format(aquery))
-                    try:
-                        con.execute(sqlalchemy.text(aquery), multi=True)
-                    except Exception as e:
-                        logger.error("Error while executing SQL!")
-                        logger.exception(e)
-                        errors += 1
-        except Exception as e:
-            logger.error("Error while connecting to database to execute raw SQL!")
-            logger.exception(e)
-            errors += 1
+def run_post_sql():
+    global errors
+    logger.info("Running post-run procedures...")
+    try:
+        for name, params in post_run_procedures.items():
+            logger.info("Calling {}...".format(name))
+            call_procedure(name, params)
+    except Exception as e:
+        logger.error("Error while executing a procedure. Procedure: {}, parameters: {}".format(name, params))
+        logger.exception(e)
+        errors += 1
 
+
+def finalize():
+    logger.info("Writing run data to the database...")
+    session, session_transaction = get_transaction()
+    with session_transaction:
         # Run report
         current_run = session.query(Run).filter_by(uuid=run_uuid).first()
         current_run.end_time = datetime.datetime.now()
         current_run.errors = errors
         current_run.entries_processed = entries_processed
         current_run.items_added = items_added
-
-        logger.info("Finished!")
 

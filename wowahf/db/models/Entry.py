@@ -1,9 +1,10 @@
 from sqlalchemy import Column, Integer, DateTime, VARCHAR, ForeignKey
+from __main__ import run_uuid
 from wowahf.db.db import Base
 
 
 class Entry(Base):
-    __tablename__ = 'entries'
+    __tablename__ = 'z_entries_{}'.format(run_uuid)
     __table_args__ = {
         'mysql_row_format': 'COMPRESSED'
     }
@@ -15,4 +16,3 @@ class Entry(Base):
     buyout = Column(Integer, nullable=False)
     quantity = Column(Integer, nullable=False)
     time_left = Column(VARCHAR(16), nullable=False)
-    run_uuid = Column(VARCHAR(64))

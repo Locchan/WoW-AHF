@@ -60,3 +60,16 @@ def get_transaction():
     if session_transaction is None:
         raise sqlalchemy.exc.InvalidRequestError("Could not create an SQL session.")
     return session, session_transaction
+
+
+def call_procedure(function_name, params):
+    connection = get_raw_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.callproc(function_name, params)
+        results = list(cursor.fetchall())
+        cursor.close()
+        connection.commit()
+        return results
+    finally:
+        connection.close()
