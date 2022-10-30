@@ -125,12 +125,6 @@ def populate_database(auction_data):
                     errors += 1
 
         logger.info("Writing run data to the database...")
-        # Run report
-        current_run = session.query(Run).filter_by(uuid=run_uuid).first()
-        current_run.end_time = datetime.datetime.now()
-        current_run.errors = errors
-        current_run.entries_processed = entries_processed
-        current_run.items_added = items_added
 
         logger.info("Running post-run SQL...")
         try:
@@ -138,12 +132,22 @@ def populate_database(auction_data):
                 for aquery in after_run_sql:
                     logger.info("Executing: {}".format(aquery))
                     try:
-                        con.execute(sqlalchemy.text(aquery))
+                        con.execute(sqlalchemy.text(aquery), multi=True)
                     except Exception as e:
                         logger.error("Error while executing SQL!")
                         logger.exception(e)
+                        errors += 1
         except Exception as e:
             logger.error("Error while connecting to database to execute raw SQL!")
             logger.exception(e)
+            errors += 1
+
+        # Run report
+        current_run = session.query(Run).filter_by(uuid=run_uuid).first()
+        current_run.end_time = datetime.datetime.now()
+        current_run.errors = errors
+        current_run.entries_processed = entries_processed
+        current_run.items_added = items_added
+
         logger.info("Finished!")
 
