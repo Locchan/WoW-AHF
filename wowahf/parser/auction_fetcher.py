@@ -2,8 +2,7 @@ import datetime
 from blizzardapi import BlizzardApi
 from __main__ import logger, cfg_provider, run_uuid
 
-import sqlalchemy
-from wowahf.db.db import get_transaction, get_connection, database, call_procedure
+from wowahf.db.db import get_transaction, call_procedure
 from wowahf.db.models import Auction, Item, Entry
 from wowahf.db.models.Run import Run
 

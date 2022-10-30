@@ -67,9 +67,7 @@ def call_procedure(function_name, params):
     try:
         cursor = connection.cursor()
         cursor.callproc(function_name, params)
-        results = list(cursor.fetchall())
         cursor.close()
         connection.commit()
-        return results
     finally:
         connection.close()
