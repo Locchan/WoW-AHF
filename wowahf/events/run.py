@@ -40,26 +40,40 @@ def run_event_health() -> None:
                 log("ERROR: event_health: extension pg_cron is not installed")
                 errors += 1
             else:
+                # cron.job is role-scoped; LocInfra exposes our jobs via
+                # public.ahf_cron_jobs() (SECURITY DEFINER).
                 cur.execute(
                     """
-                    SELECT jobname, schedule, active
-                    FROM cron.job
-                    WHERE jobname = ANY(%s)
-                    """,
-                    (list(TRACKED_EVENTS.keys()),),
+                    SELECT 1 FROM pg_proc p
+                    JOIN pg_namespace n ON n.oid = p.pronamespace
+                    WHERE n.nspname = 'public' AND p.proname = 'ahf_cron_jobs'
+                    """
                 )
-                rows = {r[0]: r for r in cur.fetchall()}
-                for name, interval in TRACKED_EVENTS.items():
-                    if name not in rows:
-                        log(f"ERROR: event_health: cron job {name!r} missing")
-                        errors += 1
-                        continue
-                    _jobname, _schedule, active = rows[name]
-                    if not active:
-                        log(
-                            f"ERROR: event_health: cron job {name!r} inactive"
-                        )
-                        errors += 1
+                if cur.fetchone() is None:
+                    log(
+                        "ERROR: event_health: public.ahf_cron_jobs() missing "
+                        "(run LocInfra setup-auth)"
+                    )
+                    errors += 1
+                else:
+                    cur.execute(
+                        "SELECT jobname, schedule, active FROM public.ahf_cron_jobs()"
+                    )
+                    rows = {r[0]: r for r in cur.fetchall()}
+                    for name, interval in TRACKED_EVENTS.items():
+                        if name not in rows:
+                            log(
+                                f"ERROR: event_health: cron job {name!r} missing"
+                            )
+                            errors += 1
+                            continue
+                        _jobname, _schedule, active = rows[name]
+                        if not active:
+                            log(
+                                f"ERROR: event_health: cron job {name!r} inactive"
+                            )
+                            errors += 1
+
 
             cur.execute(
                 """
