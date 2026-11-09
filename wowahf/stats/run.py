@@ -27,6 +27,7 @@ from wowahf.stats.crunch import (
     volume_total,
 )
 from wowahf.utils.log import log
+from wowahf.utils.shutdown import stop_requested
 
 METRIC_TOTAL = "market_value_total"
 METRIC_TRANS = "market_value_trans"
@@ -193,7 +194,12 @@ def run_stats() -> None:
             return
         written = 0
         for parse_id in parse_ids:
+            if stop_requested():
+                log("stats: stop requested, aborting remaining work")
+                break
             for house_id in house_ids:
+                if stop_requested():
+                    break
                 written += _compute_house_parse(conn, house_id, parse_id)
         log(
             f"stats: finished parses={len(parse_ids)} "

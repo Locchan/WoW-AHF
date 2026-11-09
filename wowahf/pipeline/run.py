@@ -24,6 +24,7 @@ from wowahf.pipeline.crunch import aggregate_by_item_price, compute_transactions
 from wowahf.pipeline.items import resolve_pending_item_names
 from wowahf.pipeline.normalize import normalize_listings
 from wowahf.utils.log import log
+from wowahf.utils.shutdown import stop_requested
 
 
 def run_parse() -> int:
@@ -40,8 +41,13 @@ def run_parse() -> int:
         data = get_ah_data(include_listings=True)
         prev_id = previous_parse_id(conn, parse_id)
         houses = data["houses"]
+        processed = 0
 
         for house in houses:
+            if stop_requested():
+                log("parse: stop requested, leaving remaining houses for next run")
+                break
+
             house_id = int(house["id"])
             name = str(house.get("name") or house_id)
             upsert_auction_house(conn, house_id, name)
@@ -62,24 +68,28 @@ def run_parse() -> int:
             current_lots = {r.auc_id: r.auc_time_left for r in rows}
             upsert_watch(conn, house_id, current_lots, now)
 
-            if prev_id is None:
-                continue
+            if prev_id is not None:
+                prev_rows = load_raw_for_parse(conn, house_id, prev_id)
+                watch = load_watch(conn, house_id)
+                trans_rows = compute_transactions(
+                    prev_rows,
+                    set(current_lots),
+                    watch,
+                    parse_id,
+                    now,
+                )
+                insert_trans_rows(conn, house_id, trans_rows)
 
-            prev_rows = load_raw_for_parse(conn, house_id, prev_id)
-            watch = load_watch(conn, house_id)
-            trans_rows = compute_transactions(
-                prev_rows,
-                set(current_lots),
-                watch,
-                parse_id,
-                now,
-            )
-            insert_trans_rows(conn, house_id, trans_rows)
+            processed += 1
 
-        ok, missing = resolve_pending_item_names(conn, api)
+        ok, missing = (0, 0)
+        if not stop_requested():
+            ok, missing = resolve_pending_item_names(conn, api)
+
         touch_parse(conn, parse_id, datetime.now(timezone.utc))
         log(
-            f"parse: finished parse_id={parse_id} houses={len(houses)} "
+            f"parse: finished parse_id={parse_id} "
+            f"houses={processed}/{len(houses)} "
             f"item_names ok={ok} missing={missing}"
         )
         return parse_id
