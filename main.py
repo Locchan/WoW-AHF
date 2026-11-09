@@ -16,6 +16,16 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _run_after_parse_jobs() -> None:
+    """Backfills / post-parse work. Blocks until finished (or stop requested)."""
+    if stop_requested():
+        return
+    try:
+        run_stats()
+    except Exception as exc:
+        log(f"scheduler: stats failed: {exc}")
+
+
 def _wait_until_due() -> None:
     if stop_requested():
         return
@@ -53,6 +63,11 @@ def _wait_until_due() -> None:
 if __name__ == "__main__":
     install_signal_handlers()
     log("scheduler: ready (SIGTERM/SIGINT will shut down cleanly)")
+
+    # Finish outstanding backfills before any parse is scheduled.
+    log("scheduler: running startup after-parse jobs")
+    _run_after_parse_jobs()
+
     while not stop_requested():
         _wait_until_due()
         if stop_requested():
@@ -63,8 +78,6 @@ if __name__ == "__main__":
             log(f"scheduler: parse failed: {exc}")
         if stop_requested():
             break
-        try:
-            run_stats()
-        except Exception as exc:
-            log(f"scheduler: stats failed: {exc}")
+        _run_after_parse_jobs()
+
     log("scheduler: shutdown complete")
