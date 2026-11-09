@@ -24,13 +24,15 @@ wowahf/db/migrations/__init__.py ALL list.
 
 Migration 002 installs MariaDB event purge_ah_raw_daily (procedure
 purge_old_ah_raw) which once per day deletes ah_raw_* rows whose parse is
-older than 24 hours. Requires event_scheduler=ON and:
+older than 24 hours. Migration 008 installs cull_ah_watch_8h (procedure
+cull_inactive_ah_watch) every 8 hours to DELETE active=0 from ah_watch_*.
+Requires event_scheduler=ON and:
     GRANT EVENT ON `wow_ahf`.* TO 'wowahf'@'%';
     FLUSH PRIVILEGES;
 
 Tables:
     - schema_migrations — applied migration versions
-    - parses — id, parsed_at
+    - parses — id, parsed_at (Blizzard AH Last-Modified, not wall clock)
     - auction_houses — id, name
     - items — id, name, is_commodity, name_status (pending/ok/missing)
     - market_stats — parse_id, ah_id, metric, value (house-level only)
@@ -53,10 +55,15 @@ price is buyout for normal auctions and unit_price for commodities.
 Bid-only auctions (no buyout) are skipped.
 
 main.py migrates once, then starts a threaded JobManager (wowahf/jobs):
-    - parse — due every 1h after last parses.parsed_at; chains stats
-    - stats — on startup and after each successful parse
+    - parse — every 10 minutes: HEAD houses for Last-Modified; full fetch
+      only if it differs from parses.parsed_at; chains stats on real runs
+    - stats — on startup and after each successful parse (not on skip)
     - items — on startup and every 10 minutes after each finish
+    - event_health — every 10 minutes: MariaDB event_scheduler / ENABLED /
+      overdue LAST_EXECUTED / last schema_event_runs failure
 Jobs run in their own threads; a job already running is not re-spawned.
+Watch cull and raw purge run in MariaDB (events), not in the app.
+Event SQL failures are logged to schema_event_runs (migration 009).
 
 market_stats metrics (per ah_id + parse_id; item_id=0 unless noted):
     - market_value_total — copper to buy out AH (top outliers culled)

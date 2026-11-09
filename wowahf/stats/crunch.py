@@ -83,11 +83,14 @@ def market_value_total(
     is_commodity = is_commodity[order]
     unit_prices = unit_prices[order]
 
-    cuts = np.flatnonzero(item_ids[1:] != item_ids[:-1]) + 1 if len(item_ids) > 1 else []
-    starts = np.concatenate(([0], cuts))
-    ends = np.concatenate((cuts, [len(item_ids)]))
+    if len(item_ids) > 1:
+        cuts = np.flatnonzero(item_ids[1:] != item_ids[:-1]) + 1
+    else:
+        cuts = np.array([], dtype=np.int64)
+    starts = np.concatenate((np.array([0], dtype=np.int64), cuts))
+    ends = np.concatenate((cuts, np.array([len(item_ids)], dtype=np.int64)))
 
-    for start, end in zip(starts, ends):
+    for start, end in zip(starts.tolist(), ends.tolist()):
         lvl_p, lvl_v = _price_levels(unit_prices[start:end], amounts[start:end])
         main = _main_cluster_range(lvl_p, lvl_v)
         if main is None:
@@ -146,11 +149,14 @@ def item_market_features(
     amounts = amounts[order]
 
     out: dict[int, ItemMarketFeatures] = {}
-    cuts = np.flatnonzero(item_ids[1:] != item_ids[:-1]) + 1 if len(item_ids) > 1 else []
-    starts = np.concatenate(([0], cuts))
-    ends = np.concatenate((cuts, [len(item_ids)]))
+    if len(item_ids) > 1:
+        cuts = np.flatnonzero(item_ids[1:] != item_ids[:-1]) + 1
+    else:
+        cuts = np.array([], dtype=np.int64)
+    starts = np.concatenate((np.array([0], dtype=np.int64), cuts))
+    ends = np.concatenate((cuts, np.array([len(item_ids)], dtype=np.int64)))
 
-    for start, end in zip(starts, ends):
+    for start, end in zip(starts.tolist(), ends.tolist()):
         up = unit_prices[start:end]
         vol = amounts[start:end]
         lvl_p, lvl_v = _price_levels(up, vol)
@@ -192,11 +198,15 @@ def item_volumes(
     order = np.argsort(item_ids)
     item_ids = item_ids[order]
     amounts = amounts[order]
-    cuts = np.flatnonzero(item_ids[1:] != item_ids[:-1]) + 1 if len(item_ids) > 1 else []
-    starts = np.concatenate(([0], cuts))
-    ends = np.concatenate((cuts, [len(item_ids)]))
+    if len(item_ids) > 1:
+        cuts = np.flatnonzero(item_ids[1:] != item_ids[:-1]) + 1
+    else:
+        cuts = np.array([], dtype=np.int64)
+    starts = np.concatenate((np.array([0], dtype=np.int64), cuts))
+    ends = np.concatenate((cuts, np.array([len(item_ids)], dtype=np.int64)))
     return {
-        int(item_ids[s]): int(amounts[s:e].sum()) for s, e in zip(starts, ends)
+        int(item_ids[s]): int(amounts[s:e].sum())
+        for s, e in zip(starts.tolist(), ends.tolist())
     }
 
 

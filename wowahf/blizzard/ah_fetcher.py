@@ -3,10 +3,12 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from typing import Any
 
-from wowahf.utils.config import get_config_entry
 from wowahf.blizzard import BLIZZARD_API_OBJ
+from wowahf.utils.config import get_config_entry
+from wowahf.utils.http_date import naive_utc_second, parse_http_date
 
 OAUTH_TOKEN_URL = "https://oauth.battle.net/token"
 
@@ -49,7 +51,7 @@ class BlizzardApiClient:
             return self._fetch_token()
         return self._access_token
 
-    def get(self, path: str, namespace: str, *, trailing_slash: bool = False) -> Any:
+    def _url(self, path: str, namespace: str, *, trailing_slash: bool = False) -> str:
         path = path if path.startswith("/") else f"/{path}"
         if trailing_slash and not path.endswith("/"):
             path = f"{path}/"
@@ -59,20 +61,65 @@ class BlizzardApiClient:
                 "locale": self.locale,
             }
         )
-        url = f"{self.api_host}{path}?{query}"
+        return f"{self.api_host}{path}?{query}"
+
+    def request(
+        self,
+        path: str,
+        namespace: str,
+        *,
+        method: str = "GET",
+        trailing_slash: bool = False,
+        read_body: bool = True,
+    ) -> tuple[int, dict[str, str], bytes]:
+        """Low-level request. Returns (status, headers_lower, body)."""
+        url = self._url(path, namespace, trailing_slash=trailing_slash)
         request = urllib.request.Request(
             url,
             headers={"Authorization": f"Bearer {self.access_token}"},
-            method="GET",
+            method=method,
         )
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
-                return json.loads(response.read().decode())
+                headers = {k.lower(): v for k, v in response.headers.items()}
+                body = response.read() if read_body else b""
+                return int(response.status), headers, body
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode(errors="replace")
+            body = exc.read() if read_body else b""
+            headers = {k.lower(): v for k, v in exc.headers.items()} if exc.headers else {}
+            if not read_body:
+                try:
+                    exc.read()
+                except Exception:
+                    pass
             raise RuntimeError(
-                f"Blizzard API {exc.code} for {url}: {body}"
+                f"Blizzard API {exc.code} for {url}: "
+                f"{body.decode(errors='replace') if body else ''}"
             ) from exc
+
+    def get(self, path: str, namespace: str, *, trailing_slash: bool = False) -> Any:
+        _status, _headers, body = self.request(
+            path, namespace, method="GET", trailing_slash=trailing_slash, read_body=True
+        )
+        return json.loads(body.decode())
+
+    def head_last_modified(
+        self, path: str, namespace: str, *, trailing_slash: bool = False
+    ) -> datetime | None:
+        """HEAD request; return parsed Last-Modified (UTC) or None."""
+        try:
+            _status, headers, _body = self.request(
+                path,
+                namespace,
+                method="HEAD",
+                trailing_slash=trailing_slash,
+                read_body=False,
+            )
+        except RuntimeError as exc:
+            if " 404 " in str(exc):
+                return None
+            raise
+        return parse_http_date(headers.get("last-modified"))
 
     def forever_namespace(self, kind: str) -> str:
         return f"{kind}-forever-{self.region}"
@@ -149,6 +196,35 @@ def get_house_commodities(
         raise
 
 
+def peek_ah_snapshot_time(
+    house_ids: list[int] | None = None,
+    api: BlizzardApiClient | None = None,
+) -> datetime | None:
+    """
+    HEAD each house auctions endpoint; return newest Last-Modified (naive UTC).
+
+    Uses only HEAD — no listing body download.
+    """
+    api = api or get_blizzard_api_obj()
+    ruleset_id = get_config_entry("RULESET_ID")
+    if not house_ids:
+        index = get_auction_houses(api)
+        house_ids = [int(h["id"]) for h in (index.get("auctions") or [])]
+
+    newest: datetime | None = None
+    for house_id in house_ids:
+        lm = api.head_last_modified(
+            f"/data/wow/ruleset/{ruleset_id}/auctions/{house_id}",
+            api.forever_namespace("dynamic"),
+        )
+        if lm is None:
+            continue
+        lm_naive = naive_utc_second(lm)
+        if newest is None or lm_naive > newest:
+            newest = lm_naive
+    return newest
+
+
 def get_ah_data(*, include_listings: bool = True) -> dict[str, Any]:
     api = get_blizzard_api_obj()
     ruleset = get_ruleset(api)
@@ -172,4 +248,3 @@ def get_ah_data(*, include_listings: bool = True) -> dict[str, Any]:
         result["houses"].append(entry)
 
     return result
-

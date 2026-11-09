@@ -74,11 +74,16 @@ class JobManager:
                 return
             log(f"jobs: starting {name}")
             try:
-                job.fn()
+                result = job.fn()
             except Exception as exc:
                 log(f"jobs: {name} failed: {exc}")
                 return
             if stop_requested():
+                return
+            # False means intentional skip (e.g. parse: unchanged snapshot).
+            if result is False:
+                log(f"jobs: finished {name} (skipped)")
+                ok = True
                 return
             log(f"jobs: finished {name}")
             ok = True

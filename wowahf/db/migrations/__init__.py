@@ -8,6 +8,8 @@ from wowahf.db.migrations import (
     m005_depth_spread_tables,
     m006_recreate_market_stats,
     m007_reset_inflation_rate,
+    m008_cull_watch_event,
+    m009_event_run_log,
 )
 
 ALL = [
@@ -18,4 +20,6 @@ ALL = [
     m005_depth_spread_tables,
     m006_recreate_market_stats,
     m007_reset_inflation_rate,
+    m008_cull_watch_event,
+    m009_event_run_log,
 ]
