@@ -60,7 +60,8 @@ market_stats metrics (per ah_id + parse_id; item_id=0 unless noted):
     - volume_total — sum of listing quantities
     - unique_items — distinct item ids listed
     - sold_unique_items — distinct item ids in ah_trans
-    - inflation_rate — median % change of high-volume items
+    - inflation_rate — volume-weighted mean % change of high-volume items
+      (after jump-culling wild per-item % moves)
 
 Per-item tables:
     - market_price.price — min of main volume cluster (copper/unit)

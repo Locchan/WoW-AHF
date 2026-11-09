@@ -214,13 +214,17 @@ def sold_unique_items(item_ids: np.ndarray) -> int:
     return int(np.unique(item_ids).size) if len(item_ids) else 0
 
 
-def _cull_jump_outliers(values: np.ndarray, jump: float) -> np.ndarray:
+def _cull_jump_outliers_with_weights(
+    values: np.ndarray, weights: np.ndarray, jump: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Keep the densest cluster of sorted values (gap > jump splits clusters)."""
     if len(values) == 0:
-        return values
+        return values, weights
     if len(values) == 1:
-        return values
+        return values, weights
     order = np.argsort(values)
     sorted_v = values[order]
+    sorted_w = weights[order]
     bounds = [0]
     for i in range(len(sorted_v) - 1):
         if sorted_v[i + 1] - sorted_v[i] > jump:
@@ -228,7 +232,7 @@ def _cull_jump_outliers(values: np.ndarray, jump: float) -> np.ndarray:
     bounds.append(len(sorted_v))
     clusters = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
     best = max(clusters, key=lambda se: se[1] - se[0])
-    return sorted_v[best[0] : best[1]]
+    return sorted_v[best[0] : best[1]], sorted_w[best[0] : best[1]]
 
 
 def inflation_rate(
@@ -237,7 +241,15 @@ def inflation_rate(
     current_volumes: dict[int, int],
     volume_min: int = INFLATION_VOLUME_MIN,
 ) -> float | None:
+    """
+    Volume-weighted mean % price change for items with volume >= volume_min.
+
+    Median of per-item % changes is useless here: market_price is the cluster
+    floor, so most liquid items sit at 0% hour-to-hour and the median sticks
+    at 0. Weighting by volume after the jump cull tracks the basket instead.
+    """
     changes: list[float] = []
+    weights: list[float] = []
     for item_id, vol in current_volumes.items():
         if vol < volume_min:
             continue
@@ -246,12 +258,16 @@ def inflation_rate(
         if cur is None or prev is None or prev <= 0:
             continue
         changes.append((cur - prev) * 100.0 / prev)
+        weights.append(float(vol))
 
     if not changes:
         return None
 
     arr = np.asarray(changes, dtype=np.float64)
-    culled = _cull_jump_outliers(arr, INFLATION_CHANGE_JUMP)
-    if len(culled) == 0:
+    w = np.asarray(weights, dtype=np.float64)
+    culled, culled_w = _cull_jump_outliers_with_weights(
+        arr, w, INFLATION_CHANGE_JUMP
+    )
+    if len(culled) == 0 or culled_w.sum() <= 0:
         return None
-    return float(np.round(np.median(culled), 2))
+    return float(np.round(float((culled * culled_w).sum() / culled_w.sum()), 2))
