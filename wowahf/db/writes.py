@@ -386,21 +386,17 @@ def market_price_exists(conn: Connection, parse_id: int, ah_id: int) -> bool:
 
 def insert_market_stats(
     conn: Connection,
-    rows: Sequence[tuple[int, int, str, int | None, float | int]],
+    rows: Sequence[tuple[int, int, str, float | int]],
 ) -> None:
-    """rows: (parse_id, ah_id, metric, item_id|None, value)"""
+    """rows: (parse_id, ah_id, metric, value) — house-level metrics only."""
     if not rows:
         return
     sql = (
-        "INSERT INTO market_stats (parse_id, ah_id, metric, item_id, value) "
-        "VALUES (%s, %s, %s, %s, %s)"
+        "INSERT INTO market_stats (parse_id, ah_id, metric, value) "
+        "VALUES (%s, %s, %s, %s)"
     )
-    payload = [
-        (parse_id, ah_id, metric, item_id if item_id is not None else 0, value)
-        for parse_id, ah_id, metric, item_id, value in rows
-    ]
     with conn.cursor() as cur:
-        for batch in _batched(payload):
+        for batch in _batched(rows):
             cur.executemany(sql, batch)
     conn.commit()
 
@@ -414,6 +410,66 @@ def insert_market_prices(
         return
     sql = (
         "INSERT INTO market_price (parse_id, ah_id, item_id, price) "
+        "VALUES (%s, %s, %s, %s)"
+    )
+    with conn.cursor() as cur:
+        for batch in _batched(rows):
+            cur.executemany(sql, batch)
+    conn.commit()
+
+
+def market_depth_exists(conn: Connection, parse_id: int, ah_id: int) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM market_depth
+            WHERE parse_id = %s AND ah_id = %s
+            LIMIT 1
+            """,
+            (parse_id, ah_id),
+        )
+        return cur.fetchone() is not None
+
+
+def insert_market_depths(
+    conn: Connection,
+    rows: Sequence[tuple[int, int, int, int]],
+) -> None:
+    """rows: (parse_id, ah_id, item_id, depth)"""
+    if not rows:
+        return
+    sql = (
+        "INSERT INTO market_depth (parse_id, ah_id, item_id, depth) "
+        "VALUES (%s, %s, %s, %s)"
+    )
+    with conn.cursor() as cur:
+        for batch in _batched(rows):
+            cur.executemany(sql, batch)
+    conn.commit()
+
+
+def market_spread_exists(conn: Connection, parse_id: int, ah_id: int) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM market_spread
+            WHERE parse_id = %s AND ah_id = %s
+            LIMIT 1
+            """,
+            (parse_id, ah_id),
+        )
+        return cur.fetchone() is not None
+
+
+def insert_market_spreads(
+    conn: Connection,
+    rows: Sequence[tuple[int, int, int, float]],
+) -> None:
+    """rows: (parse_id, ah_id, item_id, spread_pct)"""
+    if not rows:
+        return
+    sql = (
+        "INSERT INTO market_spread (parse_id, ah_id, item_id, spread) "
         "VALUES (%s, %s, %s, %s)"
     )
     with conn.cursor() as cur:

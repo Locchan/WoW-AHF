@@ -5,13 +5,17 @@ import numpy as np
 from wowahf.db.connection import connect
 from wowahf.db.migrate import migrate
 from wowahf.db.writes import (
+    insert_market_depths,
     insert_market_prices,
+    insert_market_spreads,
     insert_market_stats,
     list_house_ids,
     list_parse_ids,
     load_raw_for_parse,
     load_trans_for_parse,
+    market_depth_exists,
     market_price_exists,
+    market_spread_exists,
     metric_exists,
     previous_parse_id,
 )
@@ -41,8 +45,6 @@ METRIC_VOLUME_TOTAL = "volume_total"
 METRIC_UNIQUE_ITEMS = "unique_items"
 METRIC_SOLD_UNIQUE_ITEMS = "sold_unique_items"
 METRIC_INFLATION = "inflation_rate"
-METRIC_DEPTH = "market_depth"
-METRIC_SPREAD = "spread"
 
 
 def _arrays_from_raw(
@@ -69,16 +71,15 @@ def _append(
     house_id: int,
     metric: str,
     value: float | int,
-    item_id: int | None = None,
 ) -> None:
-    rows_out.append((parse_id, house_id, metric, item_id, value))
+    rows_out.append((parse_id, house_id, metric, value))
 
 
 def _compute_house_parse(conn, house_id: int, parse_id: int) -> int:
     """Returns number of metric rows written."""
     raw = load_raw_for_parse(conn, house_id, parse_id)
     item_ids, prices, amounts, flags, units = _arrays_from_raw(raw)
-    rows_out: list[tuple[int, int, str, int | None, float | int]] = []
+    rows_out: list[tuple[int, int, str, float | int]] = []
 
     trans = load_trans_for_parse(conn, house_id, parse_id)
     if trans:
@@ -145,8 +146,8 @@ def _compute_house_parse(conn, house_id: int, parse_id: int) -> int:
         )
 
     need_price = not market_price_exists(conn, parse_id, house_id)
-    need_depth = not metric_exists(conn, parse_id, house_id, METRIC_DEPTH)
-    need_spread = not metric_exists(conn, parse_id, house_id, METRIC_SPREAD)
+    need_depth = not market_depth_exists(conn, parse_id, house_id)
+    need_spread = not market_spread_exists(conn, parse_id, house_id)
     need_inflation = not metric_exists(conn, parse_id, house_id, METRIC_INFLATION)
 
     feats = None
@@ -154,16 +155,17 @@ def _compute_house_parse(conn, house_id: int, parse_id: int) -> int:
         feats = item_market_features(item_ids, prices, amounts, flags)
 
     price_rows: list[tuple[int, int, int, int]] = []
+    depth_rows: list[tuple[int, int, int, int]] = []
+    spread_rows: list[tuple[int, int, int, float]] = []
+
     if feats is not None:
-        if need_price:
-            for item_id, f in feats.items():
+        for item_id, f in feats.items():
+            if need_price:
                 price_rows.append((parse_id, house_id, item_id, f.market_price))
-        if need_depth:
-            for item_id, f in feats.items():
-                _append(rows_out, parse_id, house_id, METRIC_DEPTH, f.depth, item_id)
-        if need_spread:
-            for item_id, f in feats.items():
-                _append(rows_out, parse_id, house_id, METRIC_SPREAD, f.spread_pct, item_id)
+            if need_depth:
+                depth_rows.append((parse_id, house_id, item_id, f.depth))
+            if need_spread:
+                spread_rows.append((parse_id, house_id, item_id, f.spread_pct))
 
     if need_inflation and feats is not None:
         prev_id = previous_parse_id(conn, parse_id)
@@ -181,11 +183,13 @@ def _compute_house_parse(conn, house_id: int, parse_id: int) -> int:
 
     insert_market_stats(conn, rows_out)
     insert_market_prices(conn, price_rows)
-    return len(rows_out) + len(price_rows)
+    insert_market_depths(conn, depth_rows)
+    insert_market_spreads(conn, spread_rows)
+    return len(rows_out) + len(price_rows) + len(depth_rows) + len(spread_rows)
 
 
 def run_stats() -> None:
-    """Backfill market_stats for every parse/AH/metric that is still missing."""
+    """Backfill market metrics for every parse/AH that is still missing data."""
     log("stats: started")
     conn = connect()
     try:

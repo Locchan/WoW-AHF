@@ -5,6 +5,7 @@ from wowahf.db.migrations import (
     m002_purge_raw_event,
     m003_market_stats,
     m004_market_price_table,
+    m005_depth_spread_tables,
 )
 
 ALL = [
@@ -12,4 +13,5 @@ ALL = [
     m002_purge_raw_event,
     m003_market_stats,
     m004_market_price_table,
+    m005_depth_spread_tables,
 ]
