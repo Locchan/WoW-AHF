@@ -6,6 +6,7 @@ from wowahf.db.migrations import (
     m003_market_stats,
     m004_market_price_table,
     m005_depth_spread_tables,
+    m006_recreate_market_stats,
 )
 
 ALL = [
@@ -14,4 +15,5 @@ ALL = [
     m003_market_stats,
     m004_market_price_table,
     m005_depth_spread_tables,
+    m006_recreate_market_stats,
 ]
