@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from wowahf.db.connection import connect
 from wowahf.db.writes import last_parsed_at
@@ -11,21 +11,22 @@ PARSE_INTERVAL = timedelta(hours=1)
 ITEMS_INTERVAL = timedelta(minutes=10)
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
 def _parse_due_at() -> datetime:
+    """
+    Absolute due time for the next parse.
+
+    Must return last+interval even when that is in the past. Clamping to
+    "now" races the scheduler (due is always a few ms ahead of the loop's
+    now) and the parse job never fires.
+    """
     conn = connect()
     try:
         last = last_parsed_at(conn)
     finally:
         conn.close()
     if last is None:
-        return _utc_now()
-    due = last + PARSE_INTERVAL
-    now = _utc_now()
-    return now if due <= now else due
+        return datetime(1970, 1, 1)
+    return last + PARSE_INTERVAL
 
 
 def build_job_manager() -> JobManager:

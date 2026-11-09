@@ -129,10 +129,14 @@ class JobManager:
                     busy = name in self._running
 
                 if job.due_at is not None:
-                    due = job.due_at()
+                    try:
+                        due = job.due_at()
+                    except Exception as exc:
+                        log(f"jobs: {name} due_at failed: {exc}")
+                        continue
                     if not busy and now >= due:
                         self.spawn(name)
-                    elif soonest is None or due < soonest:
+                    elif not busy and (soonest is None or due < soonest):
                         soonest = due
                     continue
 
