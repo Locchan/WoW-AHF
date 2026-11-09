@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Callable
 
 from wowahf.utils.log import log
@@ -13,7 +13,7 @@ DueFn = Callable[[], datetime]
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 @dataclass

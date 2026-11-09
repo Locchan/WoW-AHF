@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def parse_http_date(value: str | None) -> datetime | None:
@@ -14,7 +14,7 @@ def parse_http_date(value: str | None) -> datetime | None:
     for candidate in candidates:
         for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S GMT"):
             try:
-                return datetime.strptime(candidate, fmt).replace(tzinfo=timezone.utc)
+                return datetime.strptime(candidate, fmt).replace(tzinfo=UTC)
             except ValueError:
                 continue
     return None
@@ -23,5 +23,5 @@ def parse_http_date(value: str | None) -> datetime | None:
 def naive_utc_second(value: datetime) -> datetime:
     """Naive UTC truncated to whole seconds (matches HTTP date precision)."""
     if value.tzinfo is not None:
-        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        value = value.astimezone(UTC).replace(tzinfo=None)
     return value.replace(microsecond=0)

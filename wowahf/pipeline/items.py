@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from pymysql.connections import Connection
+from psycopg import Connection
 
 from wowahf.blizzard.ah_fetcher import BlizzardApiClient
 from wowahf.db.writes import (
@@ -22,7 +22,7 @@ def _resolve_ids(
     if not item_ids:
         return 0, 0
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     ok = 0
     missing = 0
     for item_id in item_ids:

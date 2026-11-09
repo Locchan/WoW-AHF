@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from wowahf.blizzard.ah_fetcher import get_ah_data
 from wowahf.db.connection import connect
@@ -32,7 +32,7 @@ def run_parse() -> int:
     conn = connect()
     try:
         # Wall clock only for watch/trans bookkeeping.
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # Placeholder row; rewritten to Last-Modified after the fetch.
         parse_id = create_parse(conn, now)
 

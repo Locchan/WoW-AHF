@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from pymysql.connections import Connection
+from psycopg import Connection
 
 from wowahf.db.migrations import ALL
 from wowahf.utils.log import log
@@ -12,8 +12,8 @@ def _ensure_migrations_table(conn: Connection) -> None:
             """
             CREATE TABLE IF NOT EXISTS schema_migrations (
                 version VARCHAR(64) NOT NULL PRIMARY KEY,
-                applied_at DATETIME(6) NOT NULL
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                applied_at TIMESTAMPTZ NOT NULL
+            )
             """
         )
 
@@ -42,7 +42,7 @@ def migrate(conn: Connection) -> list[str]:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (%s, %s)",
-                (version, datetime.now(timezone.utc).replace(tzinfo=None)),
+                (version, datetime.now(UTC)),
             )
         conn.commit()
         newly.append(version)

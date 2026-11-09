@@ -11,24 +11,23 @@ Blizzard:
 Uses the WoW: Forever Battle.net API (dynamic-forever-{region}).
 Auction houses hang off rulesets, not realms.
 
-Database:
+Database (PostgreSQL 18 + PostGIS/Timescale/pg_cron via LocInfra):
     - DB_HOST
     - DB_USER
     - DB_PASSWORD
     - DB_DATABASE
+    - DB_PORT (optional, default 5432)
 
-On startup the app creates the database if missing and applies migrations
-once (only at process start) under wowahf/db/migrations/. Add new schema
-changes as a new migration module and register it in
-wowahf/db/migrations/__init__.py ALL list.
+On startup the app applies migrations once under wowahf/db/migrations/.
+MariaDB-era modules 001–009 are no-ops; 010_pg_baseline is the Postgres
+schema (public tables + maintenance functions). House tables live in
+schemas data_raw / data_aggregated / data_watch / data_transactions and
+are created on demand.
 
-Migration 002 installs MariaDB event purge_ah_raw_daily (procedure
-purge_old_ah_raw) which once per day deletes ah_raw_* rows whose parse is
-older than 24 hours. Migration 008 installs cull_ah_watch_8h (procedure
-cull_inactive_ah_watch) every 8 hours to DELETE active=0 from ah_watch_*.
-Requires event_scheduler=ON and:
-    GRANT EVENT ON `wow_ahf`.* TO 'wowahf'@'%';
-    FLUSH PRIVILEGES;
+Raw purge and watch cull run via pg_cron (scheduled by LocInfra
+setup-auth as postgres once the maintenance_* functions exist):
+    - purge_ah_raw_daily — 15 3 * * *
+    - cull_ah_watch_8h — 20 */8 * * *
 
 Tables:
     - schema_migrations — applied migration versions
@@ -60,11 +59,11 @@ main.py migrates once, then starts a threaded JobManager (wowahf/jobs):
       next due is LM+1h. Chains stats on success.
     - stats — on startup and after each successful parse (not on skip)
     - items — on startup and every 10 minutes after each finish
-    - event_health — every 10 minutes: MariaDB event_scheduler / ENABLED /
-      overdue LAST_EXECUTED / last schema_event_runs failure
+    - event_health — every 10 minutes: pg_cron job presence/active +
+      schema_event_runs outcomes / overdue
 Jobs run in their own threads; a job already running is not re-spawned.
-Watch cull and raw purge run in MariaDB (events), not in the app.
-Event SQL failures are logged to schema_event_runs (migration 009).
+Watch cull and raw purge run in Postgres (pg_cron), not in the app.
+Event SQL failures are logged to schema_event_runs.
 
 market_stats metrics (per ah_id + parse_id; item_id=0 unless noted):
     - market_value_total — copper to buy out AH (top outliers culled)

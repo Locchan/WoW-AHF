@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Sequence
 
-from pymysql.connections import Connection
+from psycopg import Connection
 
 from wowahf.db.house_tables import (
     aggr_table,
@@ -25,7 +25,7 @@ def upsert_auction_house(conn: Connection, house_id: int, name: str) -> None:
         cur.execute(
             """
             INSERT INTO auction_houses (id, name) VALUES (%s, %s)
-            ON DUPLICATE KEY UPDATE name = VALUES(name)
+            ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name
             """,
             (house_id, name),
         )
@@ -39,10 +39,10 @@ def _naive_utc(value: datetime) -> datetime:
 def create_parse(conn: Connection, parsed_at: datetime) -> int:
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO parses (parsed_at) VALUES (%s)",
+            "INSERT INTO parses (parsed_at) VALUES (%s) RETURNING id",
             (_naive_utc(parsed_at),),
         )
-        parse_id = cur.lastrowid
+        parse_id = cur.fetchone()[0]
     conn.commit()
     return int(parse_id)
 
@@ -93,7 +93,7 @@ def insert_raw_rows(
 ) -> None:
     ensure_house_tables(conn, house_id)
     sql = (
-        f"INSERT INTO `{raw_table(house_id)}` "
+        f"INSERT INTO {raw_table(house_id)} "
         "(auc_id, parse_id, item_id, price, auc_amount, auc_time_left, is_commodity) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s)"
     )
@@ -105,7 +105,7 @@ def insert_raw_rows(
             r.price,
             r.auc_amount,
             r.auc_time_left,
-            1 if r.is_commodity else 0,
+            bool(r.is_commodity),
         )
         for r in rows
     ]
@@ -130,17 +130,17 @@ def upsert_items(
     auction_ids = sorted(
         {int(i) for i in auction_item_ids if int(i) not in set(commodity_ids)}
     )
-    rows = [(i, 1, now_naive) for i in commodity_ids] + [
-        (i, 0, now_naive) for i in auction_ids
+    rows = [(i, True, now_naive) for i in commodity_ids] + [
+        (i, False, now_naive) for i in auction_ids
     ]
     if not rows:
         return
     sql = """
         INSERT INTO items (id, is_commodity, name_status, updated_at)
         VALUES (%s, %s, 'pending', %s)
-        ON DUPLICATE KEY UPDATE
-            is_commodity = VALUES(is_commodity),
-            updated_at = VALUES(updated_at)
+        ON CONFLICT (id) DO UPDATE SET
+            is_commodity = EXCLUDED.is_commodity,
+            updated_at = EXCLUDED.updated_at
     """
     with conn.cursor() as cur:
         for batch in _batched(rows):
@@ -165,16 +165,16 @@ def backfill_raw_is_commodity_from_items(
     updated = 0
     with conn.cursor() as cur:
         for batch in _batched(ids):
-            fmt = ",".join(["%s"] * len(batch))
             cur.execute(
                 f"""
-                UPDATE `{table}` AS r
-                INNER JOIN items AS i ON i.id = r.item_id
-                SET r.is_commodity = i.is_commodity
-                WHERE r.item_id IN ({fmt})
-                  AND r.is_commodity <> i.is_commodity
+                UPDATE {table} AS r
+                SET is_commodity = i.is_commodity
+                FROM items AS i
+                WHERE i.id = r.item_id
+                  AND r.item_id = ANY(%s)
+                  AND r.is_commodity IS DISTINCT FROM i.is_commodity
                 """,
-                batch,
+                (list(batch),),
             )
             updated += cur.rowcount
     conn.commit()
@@ -234,7 +234,7 @@ def insert_aggr_rows(
     """rows: (item_id, parse_id, price, amount)"""
     ensure_house_tables(conn, house_id)
     sql = (
-        f"INSERT INTO `{aggr_table(house_id)}` "
+        f"INSERT INTO {aggr_table(house_id)} "
         "(item_id, parse_id, price, amount) VALUES (%s, %s, %s, %s)"
     )
     with conn.cursor() as cur:
@@ -253,12 +253,16 @@ def insert_trans_rows(
         return
     ensure_house_tables(conn, house_id)
     sql = (
-        f"INSERT INTO `{trans_table(house_id)}` "
+        f"INSERT INTO {trans_table(house_id)} "
         "(item_id, parse_id, price, amount, is_commodity) "
         "VALUES (%s, %s, %s, %s, %s)"
     )
+    payload = [
+        (item_id, parse_id, price, amount, bool(is_commodity))
+        for item_id, parse_id, price, amount, is_commodity in rows
+    ]
     with conn.cursor() as cur:
-        for batch in _batched(rows):
+        for batch in _batched(payload):
             cur.executemany(sql, batch)
     conn.commit()
 
@@ -271,10 +275,22 @@ def load_raw_for_parse(
     with conn.cursor() as cur:
         cur.execute(
             f"SELECT auc_id, item_id, price, auc_amount, auc_time_left, is_commodity "
-            f"FROM `{raw_table(house_id)}` WHERE parse_id = %s",
+            f"FROM {raw_table(house_id)} WHERE parse_id = %s",
             (parse_id,),
         )
-        return list(cur.fetchall())
+        out: list[tuple[int, int, int, int, str, int]] = []
+        for auc_id, item_id, price, amount, tl, is_commodity in cur.fetchall():
+            out.append(
+                (
+                    int(auc_id),
+                    int(item_id),
+                    int(price),
+                    int(amount),
+                    str(tl),
+                    1 if is_commodity else 0,
+                )
+            )
+        return out
 
 
 def load_trans_for_parse(
@@ -285,10 +301,13 @@ def load_trans_for_parse(
     with conn.cursor() as cur:
         cur.execute(
             f"SELECT item_id, price, amount, is_commodity "
-            f"FROM `{trans_table(house_id)}` WHERE parse_id = %s",
+            f"FROM {trans_table(house_id)} WHERE parse_id = %s",
             (parse_id,),
         )
-        return list(cur.fetchall())
+        return [
+            (int(item_id), int(price), int(amount), 1 if is_commodity else 0)
+            for item_id, price, amount, is_commodity in cur.fetchall()
+        ]
 
 
 def load_watch(
@@ -298,10 +317,10 @@ def load_watch(
     with conn.cursor() as cur:
         cur.execute(
             f"SELECT auc_id, first_time_left, short_seen_at, active "
-            f"FROM `{watch_table(house_id)}`"
+            f"FROM {watch_table(house_id)}"
         )
         return {
-            int(auc_id): (first_tl, short_at, bool(active))
+            int(auc_id): (str(first_tl), short_at, bool(active))
             for auc_id, first_tl, short_at, active in cur.fetchall()
         }
 
@@ -324,7 +343,7 @@ def upsert_watch(
     for auc_id, time_left in current_lots.items():
         if auc_id not in existing:
             short_at = now_naive if time_left == "SHORT" else None
-            inserts.append((auc_id, time_left, short_at, 1))
+            inserts.append((auc_id, time_left, short_at, True))
             continue
         _first_tl, short_at, active = existing[auc_id]
         if short_at is None and time_left == "SHORT":
@@ -341,27 +360,26 @@ def upsert_watch(
     with conn.cursor() as cur:
         if inserts:
             cur.executemany(
-                f"INSERT INTO `{table}` (auc_id, first_time_left, short_seen_at, active) "
-                "VALUES (%s, %s, %s, %s)",
+                f"INSERT INTO {table} (auc_id, first_time_left, short_seen_at, active) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (auc_id) DO NOTHING",
                 inserts,
             )
         if short_updates:
             cur.executemany(
-                f"UPDATE `{table}` SET short_seen_at = %s "
+                f"UPDATE {table} SET short_seen_at = %s "
                 "WHERE auc_id = %s AND short_seen_at IS NULL",
                 short_updates,
             )
         if reactivate:
-            fmt = ",".join(["%s"] * len(reactivate))
             cur.execute(
-                f"UPDATE `{table}` SET active = 1 WHERE auc_id IN ({fmt})",
-                reactivate,
+                f"UPDATE {table} SET active = TRUE WHERE auc_id = ANY(%s)",
+                (reactivate,),
             )
         if missing:
-            fmt = ",".join(["%s"] * len(missing))
             cur.execute(
-                f"UPDATE `{table}` SET active = 0 WHERE auc_id IN ({fmt})",
-                missing,
+                f"UPDATE {table} SET active = FALSE WHERE auc_id = ANY(%s)",
+                (missing,),
             )
     conn.commit()
 

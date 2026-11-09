@@ -1,22 +1,19 @@
-from __future__ import annotations
-
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from wowahf.db.connection import connect
 from wowahf.utils.log import log
 
-# Events we install via migrations. Interval used for overdue checks.
+# pg_cron job names installed by 010_pg_baseline.
 TRACKED_EVENTS: dict[str, timedelta] = {
     "purge_ah_raw_daily": timedelta(days=1),
     "cull_ah_watch_8h": timedelta(hours=8),
 }
 
-# Allow some slack past the schedule before treating as missed.
 OVERDUE_GRACE = timedelta(minutes=30)
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _naive(value: datetime | None) -> datetime | None:
@@ -27,78 +24,51 @@ def _naive(value: datetime | None) -> datetime | None:
 
 def run_event_health() -> None:
     """
-    Check MariaDB scheduled events we own.
-
-    Native I_S.EVENTS has STATUS + LAST_EXECUTED but not success/failure.
-    Failures are read from schema_event_runs (written by the procedures).
+    Check pg_cron jobs we own and recent schema_event_runs outcomes.
     """
     log("event_health: started")
     conn = connect()
     errors = 0
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT @@event_scheduler")
-            scheduler = str(cur.fetchone()[0]).upper()
-            if scheduler not in ("ON", "1"):
-                log(f"ERROR: event_health: event_scheduler is {scheduler!r} (expected ON)")
-                errors += 1
-
             cur.execute(
                 """
-                SELECT EVENT_NAME, STATUS, LAST_EXECUTED, STARTS,
-                       INTERVAL_VALUE, INTERVAL_FIELD
-                FROM information_schema.EVENTS
-                WHERE EVENT_SCHEMA = DATABASE()
-                  AND EVENT_NAME IN (%s, %s)
-                """,
-                tuple(TRACKED_EVENTS.keys()),
+                SELECT extname FROM pg_extension WHERE extname = 'pg_cron'
+                """
             )
-            rows = {r[0]: r for r in cur.fetchall()}
-
-            for name, interval in TRACKED_EVENTS.items():
-                if name not in rows:
-                    log(f"ERROR: event_health: event {name!r} missing from DATABASE()")
-                    errors += 1
-                    continue
-
-                _ename, status, last_executed, starts, _iv, _if = rows[name]
-                if str(status).upper() != "ENABLED":
-                    log(
-                        f"ERROR: event_health: event {name!r} STATUS={status!r} "
-                        "(expected ENABLED)"
-                    )
-                    errors += 1
-
-                last = _naive(last_executed)
-                start_at = _naive(starts)
-                now = _utc_now()
-                if last is None:
-                    # Not yet run — only error once past first scheduled start + grace.
-                    if start_at is not None and now > start_at + OVERDUE_GRACE:
+            if cur.fetchone() is None:
+                log("ERROR: event_health: extension pg_cron is not installed")
+                errors += 1
+            else:
+                cur.execute(
+                    """
+                    SELECT jobname, schedule, active
+                    FROM cron.job
+                    WHERE jobname = ANY(%s)
+                    """,
+                    (list(TRACKED_EVENTS.keys()),),
+                )
+                rows = {r[0]: r for r in cur.fetchall()}
+                for name, interval in TRACKED_EVENTS.items():
+                    if name not in rows:
+                        log(f"ERROR: event_health: cron job {name!r} missing")
+                        errors += 1
+                        continue
+                    _jobname, _schedule, active = rows[name]
+                    if not active:
                         log(
-                            f"ERROR: event_health: event {name!r} never executed "
-                            f"(STARTS={start_at.isoformat()})"
+                            f"ERROR: event_health: cron job {name!r} inactive"
                         )
                         errors += 1
-                elif now > last + interval + OVERDUE_GRACE:
-                    log(
-                        f"ERROR: event_health: event {name!r} overdue "
-                        f"LAST_EXECUTED={last.isoformat()} "
-                        f"interval={interval}"
-                    )
-                    errors += 1
 
-            # Latest run outcome from our log table (may not exist pre-m009).
             cur.execute(
                 """
-                SELECT COUNT(*)
-                FROM information_schema.tables
-                WHERE table_schema = DATABASE()
-                  AND table_name = 'schema_event_runs'
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = 'schema_event_runs'
                 """
             )
-            if cur.fetchone()[0]:
-                for name in TRACKED_EVENTS:
+            if cur.fetchone():
+                for name, interval in TRACKED_EVENTS.items():
                     cur.execute(
                         """
                         SELECT ok, error_message, started_at, finished_at
@@ -113,7 +83,7 @@ def run_event_health() -> None:
                     if row is None:
                         continue
                     ok, err, started, finished = row
-                    if ok == 0:
+                    if ok is False:
                         log(
                             f"ERROR: event_health: event {name!r} last run FAILED "
                             f"started={started} finished={finished} "
@@ -121,12 +91,19 @@ def run_event_health() -> None:
                         )
                         errors += 1
                     elif ok is None and started is not None:
-                        # Started but never finished (crash mid-run).
                         started_n = _naive(started)
                         if started_n and _utc_now() > started_n + timedelta(hours=2):
                             log(
                                 f"ERROR: event_health: event {name!r} last run "
                                 f"stuck since {started}"
+                            )
+                            errors += 1
+                    elif ok is True:
+                        last = _naive(finished) or _naive(started)
+                        if last and _utc_now() > last + interval + OVERDUE_GRACE:
+                            log(
+                                f"ERROR: event_health: event {name!r} overdue "
+                                f"last={last.isoformat()} interval={interval}"
                             )
                             errors += 1
 

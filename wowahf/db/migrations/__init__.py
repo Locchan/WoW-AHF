@@ -10,6 +10,7 @@ from wowahf.db.migrations import (
     m007_reset_inflation_rate,
     m008_cull_watch_event,
     m009_event_run_log,
+    m010_pg_baseline,
 )
 
 ALL = [
@@ -22,4 +23,5 @@ ALL = [
     m007_reset_inflation_rate,
     m008_cull_watch_event,
     m009_event_run_log,
+    m010_pg_baseline,
 ]
