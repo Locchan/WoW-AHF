@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from wowahf.blizzard.ah_fetcher import get_ah_data, peek_ah_snapshot_time
+from wowahf.blizzard.ah_fetcher import get_ah_data
 from wowahf.db.connection import connect
 from wowahf.db.writes import (
     backfill_raw_is_commodity_from_items,
@@ -8,8 +8,6 @@ from wowahf.db.writes import (
     insert_aggr_rows,
     insert_raw_rows,
     insert_trans_rows,
-    last_parsed_at,
-    list_house_ids,
     load_raw_for_parse,
     load_watch,
     previous_parse_id,
@@ -25,40 +23,28 @@ from wowahf.utils.log import log
 from wowahf.utils.shutdown import stop_requested
 
 
-def run_parse() -> int | bool:
+def run_parse() -> int:
     """
-    Fetch AH data when Blizzard Last-Modified advanced.
-
-    Returns parse_id on a full run, or False if the snapshot is unchanged
-    (so the job manager skips chaining stats).
+    Fetch AH data and persist. parses.parsed_at is Blizzard Last-Modified
+    (newest across house responses), which the scheduler uses as LM+1h.
     """
     log("parse: started")
     conn = connect()
     try:
-        known_houses = list_house_ids(conn)
-        snapshot_at = peek_ah_snapshot_time(known_houses or None)
-        if snapshot_at is None:
-            log("parse: no Last-Modified from HEAD; aborting")
-            return False
-
-        last = last_parsed_at(conn)
-        last_sec = naive_utc_second(last) if last is not None else None
-        if last_sec is not None and snapshot_at == last_sec:
-            log(
-                f"parse: skip unchanged snapshot last_modified={snapshot_at.isoformat()}"
-            )
-            return False
-
-        log(
-            f"parse: new snapshot last_modified={snapshot_at.isoformat()} "
-            f"prev={last_sec.isoformat() if last_sec else None}"
-        )
-
-        # Wall clock only for watch/trans bookkeeping; parses.parsed_at is LM.
+        # Wall clock only for watch/trans bookkeeping.
         now = datetime.now(timezone.utc)
-        parse_id = create_parse(conn, snapshot_at)
+        # Placeholder row; rewritten to Last-Modified after the fetch.
+        parse_id = create_parse(conn, now)
 
         data = get_ah_data(include_listings=True)
+        snapshot_at = data.get("last_modified")
+        if snapshot_at is not None:
+            snapshot_at = naive_utc_second(snapshot_at)
+            touch_parse(conn, parse_id, snapshot_at)
+        else:
+            snapshot_at = naive_utc_second(now)
+            log("parse: warning: no Last-Modified in responses; using wall clock")
+
         prev_id = previous_parse_id(conn, parse_id)
         houses = data["houses"]
         processed = 0
@@ -102,12 +88,14 @@ def run_parse() -> int | bool:
 
             processed += 1
 
-        # Keep parsed_at as the Blizzard snapshot time (not wall clock).
+        # Ensure final parsed_at is LM (scheduler reads this for next due).
         touch_parse(conn, parse_id, snapshot_at)
+        next_due = snapshot_at + timedelta(hours=1)
         log(
             f"parse: finished parse_id={parse_id} "
             f"houses={processed}/{len(houses)} "
-            f"last_modified={snapshot_at.isoformat()}"
+            f"last_modified={snapshot_at.isoformat()} "
+            f"next_due={next_due.isoformat()}"
         )
         return parse_id
     finally:

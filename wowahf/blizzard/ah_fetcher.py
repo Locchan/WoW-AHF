@@ -98,28 +98,19 @@ class BlizzardApiClient:
             ) from exc
 
     def get(self, path: str, namespace: str, *, trailing_slash: bool = False) -> Any:
-        _status, _headers, body = self.request(
+        doc, _lm = self.get_with_last_modified(
+            path, namespace, trailing_slash=trailing_slash
+        )
+        return doc
+
+    def get_with_last_modified(
+        self, path: str, namespace: str, *, trailing_slash: bool = False
+    ) -> tuple[Any, datetime | None]:
+        """GET JSON body and parsed Last-Modified (UTC) from response headers."""
+        _status, headers, body = self.request(
             path, namespace, method="GET", trailing_slash=trailing_slash, read_body=True
         )
-        return json.loads(body.decode())
-
-    def head_last_modified(
-        self, path: str, namespace: str, *, trailing_slash: bool = False
-    ) -> datetime | None:
-        """HEAD request; return parsed Last-Modified (UTC) or None."""
-        try:
-            _status, headers, _body = self.request(
-                path,
-                namespace,
-                method="HEAD",
-                trailing_slash=trailing_slash,
-                read_body=False,
-            )
-        except RuntimeError as exc:
-            if " 404 " in str(exc):
-                return None
-            raise
-        return parse_http_date(headers.get("last-modified"))
+        return json.loads(body.decode()), parse_http_date(headers.get("last-modified"))
 
     def forever_namespace(self, kind: str) -> str:
         return f"{kind}-forever-{self.region}"
@@ -171,10 +162,10 @@ def get_auction_houses(api: BlizzardApiClient | None = None) -> dict[str, Any]:
 
 def get_house_auctions(
     house_id: int | str, api: BlizzardApiClient | None = None
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], datetime | None]:
     api = api or get_blizzard_api_obj()
     ruleset_id = get_config_entry("RULESET_ID")
-    return api.get(
+    return api.get_with_last_modified(
         f"/data/wow/ruleset/{ruleset_id}/auctions/{house_id}",
         api.forever_namespace("dynamic"),
     )
@@ -182,50 +173,25 @@ def get_house_auctions(
 
 def get_house_commodities(
     house_id: int | str, api: BlizzardApiClient | None = None
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], datetime | None]:
     api = api or get_blizzard_api_obj()
     ruleset_id = get_config_entry("RULESET_ID")
     try:
-        return api.get(
+        return api.get_with_last_modified(
             f"/data/wow/ruleset/{ruleset_id}/auctions/{house_id}/commodities",
             api.forever_namespace("dynamic"),
         )
     except RuntimeError as exc:
         if " 404 " in str(exc):
-            return {"auctions": []}
+            return {"auctions": []}, None
         raise
 
 
-def peek_ah_snapshot_time(
-    house_ids: list[int] | None = None,
-    api: BlizzardApiClient | None = None,
-) -> datetime | None:
-    """
-    HEAD each house auctions endpoint; return newest Last-Modified (naive UTC).
-
-    Uses only HEAD — no listing body download.
-    """
-    api = api or get_blizzard_api_obj()
-    ruleset_id = get_config_entry("RULESET_ID")
-    if not house_ids:
-        index = get_auction_houses(api)
-        house_ids = [int(h["id"]) for h in (index.get("auctions") or [])]
-
-    newest: datetime | None = None
-    for house_id in house_ids:
-        lm = api.head_last_modified(
-            f"/data/wow/ruleset/{ruleset_id}/auctions/{house_id}",
-            api.forever_namespace("dynamic"),
-        )
-        if lm is None:
-            continue
-        lm_naive = naive_utc_second(lm)
-        if newest is None or lm_naive > newest:
-            newest = lm_naive
-    return newest
-
-
 def get_ah_data(*, include_listings: bool = True) -> dict[str, Any]:
+    """
+    Fetch ruleset houses (+ listings). When include_listings, also sets
+    result['last_modified'] to the newest Last-Modified seen (naive UTC).
+    """
     api = get_blizzard_api_obj()
     ruleset = get_ruleset(api)
     houses_index = get_auction_houses(api)
@@ -234,17 +200,26 @@ def get_ah_data(*, include_listings: bool = True) -> dict[str, Any]:
     result: dict[str, Any] = {
         "ruleset": ruleset,
         "houses": [],
+        "last_modified": None,
     }
+    newest: datetime | None = None
 
     for house in houses:
         house_id = house["id"]
         name = house.get("name", house_id)
         entry: dict[str, Any] = {"id": house_id, "name": name}
         if include_listings:
-            auctions_doc = get_house_auctions(house_id, api)
-            commodities_doc = get_house_commodities(house_id, api)
+            auctions_doc, auc_lm = get_house_auctions(house_id, api)
+            commodities_doc, com_lm = get_house_commodities(house_id, api)
             entry["auctions"] = auctions_doc.get("auctions") or []
             entry["commodities"] = commodities_doc.get("auctions") or []
+            for lm in (auc_lm, com_lm):
+                if lm is None:
+                    continue
+                lm_naive = naive_utc_second(lm)
+                if newest is None or lm_naive > newest:
+                    newest = lm_naive
         result["houses"].append(entry)
 
+    result["last_modified"] = newest
     return result

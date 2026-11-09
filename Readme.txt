@@ -55,8 +55,9 @@ price is buyout for normal auctions and unit_price for commodities.
 Bid-only auctions (no buyout) are skipped.
 
 main.py migrates once, then starts a threaded JobManager (wowahf/jobs):
-    - parse — every 10 minutes: HEAD houses for Last-Modified; full fetch
-      only if it differs from parses.parsed_at; chains stats on real runs
+    - parse — due at parses.parsed_at + 1h (parsed_at = Blizzard Last-Modified
+      from the last full fetch). Startup aligns to that; after each parse the
+      next due is LM+1h. Chains stats on success.
     - stats — on startup and after each successful parse (not on skip)
     - items — on startup and every 10 minutes after each finish
     - event_health — every 10 minutes: MariaDB event_scheduler / ENABLED /
