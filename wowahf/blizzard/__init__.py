@@ -1,0 +1,2 @@
+BLIZZARD_API_OBJ = None
+
