@@ -33,9 +33,11 @@ def ensure_house_tables(conn: Connection, house_id: int) -> None:
                 price BIGINT NOT NULL,
                 auc_amount INT NOT NULL,
                 auc_time_left ENUM({TIME_LEFT_ENUM}) NOT NULL,
+                is_commodity TINYINT(1) NOT NULL DEFAULT 0,
                 INDEX idx_raw_parse (parse_id),
                 INDEX idx_raw_auc_parse (auc_id, parse_id),
-                INDEX idx_raw_parse_item_price (parse_id, item_id, price)
+                INDEX idx_raw_parse_item_price (parse_id, item_id, price),
+                INDEX idx_raw_item (item_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
@@ -60,6 +62,7 @@ def ensure_house_tables(conn: Connection, house_id: int) -> None:
                 parse_id BIGINT NOT NULL,
                 price BIGINT NOT NULL,
                 amount INT NOT NULL,
+                is_commodity TINYINT(1) NOT NULL DEFAULT 0,
                 INDEX idx_trans_parse (parse_id),
                 INDEX idx_trans_parse_item (parse_id, item_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4

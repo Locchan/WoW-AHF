@@ -77,6 +77,18 @@ class BlizzardApiClient:
     def forever_namespace(self, kind: str) -> str:
         return f"{kind}-forever-{self.region}"
 
+    def get_item(self, item_id: int) -> dict[str, Any] | None:
+        """Fetch static item data. Returns None if the id is unknown (404)."""
+        try:
+            return self.get(
+                f"/data/wow/item/{item_id}",
+                self.forever_namespace("static"),
+            )
+        except RuntimeError as exc:
+            if " 404 " in str(exc):
+                return None
+            raise
+
 
 def get_blizzard_api_obj() -> BlizzardApiClient:
     global BLIZZARD_API_OBJ
@@ -139,14 +151,9 @@ def get_house_commodities(
 
 def get_ah_data(*, include_listings: bool = True) -> dict[str, Any]:
     api = get_blizzard_api_obj()
-    print(f"blizzard: forever {api.region} ruleset {get_config_entry('RULESET_ID')}")
-
     ruleset = get_ruleset(api)
-    print(f"blizzard: ruleset {ruleset.get('id')} ({ruleset.get('name')})")
-
     houses_index = get_auction_houses(api)
     houses = houses_index.get("auctions") or []
-    print(f"blizzard: {len(houses)} auction houses")
 
     result: dict[str, Any] = {
         "ruleset": ruleset,
@@ -158,17 +165,10 @@ def get_ah_data(*, include_listings: bool = True) -> dict[str, Any]:
         name = house.get("name", house_id)
         entry: dict[str, Any] = {"id": house_id, "name": name}
         if include_listings:
-            print(f"blizzard: fetching house {house_id} ({name})")
             auctions_doc = get_house_auctions(house_id, api)
             commodities_doc = get_house_commodities(house_id, api)
-            auctions = auctions_doc.get("auctions") or []
-            commodities = commodities_doc.get("auctions") or []
-            print(
-                f"blizzard: house {house_id}: "
-                f"{len(auctions)} auctions, {len(commodities)} commodities"
-            )
-            entry["auctions"] = auctions
-            entry["commodities"] = commodities
+            entry["auctions"] = auctions_doc.get("auctions") or []
+            entry["commodities"] = commodities_doc.get("auctions") or []
         result["houses"].append(entry)
 
     return result

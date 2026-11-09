@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from pymysql.connections import Connection
 
 from wowahf.db.migrations import ALL
+from wowahf.utils.log import log
 
 
 def _ensure_migrations_table(conn: Connection) -> None:
@@ -33,7 +34,7 @@ def migrate(conn: Connection) -> list[str]:
         version = module.VERSION
         if version in applied:
             continue
-        print(f"db: applying migration {version}")
+        log(f"db: applying migration {version}")
         module.upgrade(conn)
         with conn.cursor() as cur:
             cur.execute(
@@ -43,6 +44,4 @@ def migrate(conn: Connection) -> list[str]:
         conn.commit()
         newly.append(version)
 
-    if not newly:
-        print("db: schema up to date")
     return newly

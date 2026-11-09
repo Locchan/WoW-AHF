@@ -1,6 +1,15 @@
-from typing import Any
+from typing import Any, NamedTuple
 
 VALID_TIME_LEFT = frozenset({"SHORT", "MEDIUM", "LONG", "VERY_LONG"})
+
+
+class ListingRow(NamedTuple):
+    auc_id: int
+    item_id: int
+    price: int
+    auc_amount: int
+    auc_time_left: str
+    is_commodity: bool
 
 
 def _time_left(value: Any) -> str | None:
@@ -22,13 +31,12 @@ def _item_id(item: Any) -> int | None:
 def normalize_listings(
     auctions: list[dict[str, Any]] | None,
     commodities: list[dict[str, Any]] | None,
-) -> list[tuple[int, int, int, int, str]]:
+) -> list[ListingRow]:
     """
-    Flatten auctions + commodities into rows:
-    (auc_id, item_id, price, auc_amount, auc_time_left)
+    Flatten auctions + commodities.
     price = buyout (auctions) or unit_price (commodities). Bid-only skipped.
     """
-    rows: list[tuple[int, int, int, int, str]] = []
+    rows: list[ListingRow] = []
 
     for entry in auctions or []:
         buyout = entry.get("buyout")
@@ -40,7 +48,9 @@ def normalize_listings(
         tl = _time_left(entry.get("time_left"))
         if auc_id is None or item_id is None or tl is None:
             continue
-        rows.append((int(auc_id), item_id, int(buyout), int(amount), tl))
+        rows.append(
+            ListingRow(int(auc_id), item_id, int(buyout), int(amount), tl, False)
+        )
 
     for entry in commodities or []:
         unit_price = entry.get("unit_price")
@@ -52,6 +62,23 @@ def normalize_listings(
         tl = _time_left(entry.get("time_left"))
         if auc_id is None or item_id is None or tl is None:
             continue
-        rows.append((int(auc_id), item_id, int(unit_price), int(amount), tl))
+        rows.append(
+            ListingRow(
+                int(auc_id), item_id, int(unit_price), int(amount), tl, True
+            )
+        )
 
     return rows
+
+
+def listing_value(price: int, amount: int, is_commodity: bool) -> int:
+    """Copper to buy this entire listing."""
+    return int(price) * int(amount) if is_commodity else int(price)
+
+
+def unit_price(price: int, amount: int, is_commodity: bool) -> int:
+    """Copper per unit for clustering / market_price."""
+    if is_commodity:
+        return int(price)
+    qty = int(amount) if int(amount) > 0 else 1
+    return int(price) // qty
