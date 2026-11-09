@@ -11,6 +11,7 @@ from wowahf.db.migrations import (
     m008_cull_watch_event,
     m009_event_run_log,
     m010_pg_baseline,
+    m011_space_optimize,
 )
 
 ALL = [
@@ -24,4 +25,5 @@ ALL = [
     m008_cull_watch_event,
     m009_event_run_log,
     m010_pg_baseline,
+    m011_space_optimize,
 ]

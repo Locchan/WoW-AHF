@@ -5,7 +5,8 @@ from wowahf.utils.log import log
 
 # pg_cron job names installed by 010_pg_baseline.
 TRACKED_EVENTS: dict[str, timedelta] = {
-    "purge_ah_raw_daily": timedelta(days=1),
+    # Name kept for schema_event_runs continuity; schedule is hourly.
+    "purge_ah_raw_daily": timedelta(hours=1),
     "cull_ah_watch_8h": timedelta(hours=8),
 }
 

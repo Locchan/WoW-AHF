@@ -226,20 +226,42 @@ def set_item_name(
     conn.commit()
 
 
+def _parsed_at_for(conn: Connection, parse_id: int) -> datetime:
+    with conn.cursor() as cur:
+        cur.execute("SELECT parsed_at FROM parses WHERE id = %s", (parse_id,))
+        row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"parse_id {parse_id} not found")
+    return row[0]
+
+
 def insert_aggr_rows(
     conn: Connection,
     house_id: int,
     rows: Sequence[tuple[int, int, int, int]],
 ) -> None:
     """rows: (item_id, parse_id, price, amount)"""
+    if not rows:
+        return
     ensure_house_tables(conn, house_id)
+    # All rows in one call share a parse_id today; still group safely.
+    by_parse: dict[int, list[tuple[int, int, int, int]]] = {}
+    for row in rows:
+        by_parse.setdefault(row[1], []).append(row)
     sql = (
         f"INSERT INTO {aggr_table(house_id)} "
-        "(item_id, parse_id, price, amount) VALUES (%s, %s, %s, %s)"
+        "(item_id, parse_id, parsed_at, price, amount) "
+        "VALUES (%s, %s, %s, %s, %s)"
     )
     with conn.cursor() as cur:
-        for batch in _batched(rows):
-            cur.executemany(sql, batch)
+        for parse_id, group in by_parse.items():
+            parsed_at = _parsed_at_for(conn, parse_id)
+            payload = [
+                (item_id, parse_id, parsed_at, price, amount)
+                for item_id, _pid, price, amount in group
+            ]
+            for batch in _batched(payload):
+                cur.executemany(sql, batch)
     conn.commit()
 
 
@@ -252,18 +274,23 @@ def insert_trans_rows(
     if not rows:
         return
     ensure_house_tables(conn, house_id)
+    by_parse: dict[int, list[tuple[int, int, int, int, int]]] = {}
+    for row in rows:
+        by_parse.setdefault(row[1], []).append(row)
     sql = (
         f"INSERT INTO {trans_table(house_id)} "
-        "(item_id, parse_id, price, amount, is_commodity) "
-        "VALUES (%s, %s, %s, %s, %s)"
+        "(item_id, parse_id, parsed_at, price, amount, is_commodity) "
+        "VALUES (%s, %s, %s, %s, %s, %s)"
     )
-    payload = [
-        (item_id, parse_id, price, amount, bool(is_commodity))
-        for item_id, parse_id, price, amount, is_commodity in rows
-    ]
     with conn.cursor() as cur:
-        for batch in _batched(payload):
-            cur.executemany(sql, batch)
+        for parse_id, group in by_parse.items():
+            parsed_at = _parsed_at_for(conn, parse_id)
+            payload = [
+                (item_id, parse_id, parsed_at, price, amount, bool(is_commodity))
+                for item_id, _pid, price, amount, is_commodity in group
+            ]
+            for batch in _batched(payload):
+                cur.executemany(sql, batch)
     conn.commit()
 
 
@@ -412,6 +439,24 @@ def market_price_exists(conn: Connection, parse_id: int, ah_id: int) -> bool:
         return cur.fetchone() is not None
 
 
+def _insert_market_with_parsed_at(
+    conn: Connection,
+    sql: str,
+    rows: Sequence[tuple],
+    parse_id_index: int = 0,
+) -> None:
+    by_parse: dict[int, list[tuple]] = {}
+    for row in rows:
+        by_parse.setdefault(int(row[parse_id_index]), []).append(row)
+    with conn.cursor() as cur:
+        for parse_id, group in by_parse.items():
+            parsed_at = _parsed_at_for(conn, parse_id)
+            payload = [(*row, parsed_at) for row in group]
+            for batch in _batched(payload):
+                cur.executemany(sql, batch)
+    conn.commit()
+
+
 def insert_market_stats(
     conn: Connection,
     rows: Sequence[tuple[int, int, str, float | int]],
@@ -419,14 +464,12 @@ def insert_market_stats(
     """rows: (parse_id, ah_id, metric, value) — house-level metrics only."""
     if not rows:
         return
-    sql = (
-        "INSERT INTO market_stats (parse_id, ah_id, metric, value) "
-        "VALUES (%s, %s, %s, %s)"
+    _insert_market_with_parsed_at(
+        conn,
+        "INSERT INTO market_stats (parse_id, ah_id, metric, value, parsed_at) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        rows,
     )
-    with conn.cursor() as cur:
-        for batch in _batched(rows):
-            cur.executemany(sql, batch)
-    conn.commit()
 
 
 def insert_market_prices(
@@ -436,14 +479,12 @@ def insert_market_prices(
     """rows: (parse_id, ah_id, item_id, price) — price in copper."""
     if not rows:
         return
-    sql = (
-        "INSERT INTO market_price (parse_id, ah_id, item_id, price) "
-        "VALUES (%s, %s, %s, %s)"
+    _insert_market_with_parsed_at(
+        conn,
+        "INSERT INTO market_price (parse_id, ah_id, item_id, price, parsed_at) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        rows,
     )
-    with conn.cursor() as cur:
-        for batch in _batched(rows):
-            cur.executemany(sql, batch)
-    conn.commit()
 
 
 def market_depth_exists(conn: Connection, parse_id: int, ah_id: int) -> bool:
@@ -466,14 +507,12 @@ def insert_market_depths(
     """rows: (parse_id, ah_id, item_id, depth)"""
     if not rows:
         return
-    sql = (
-        "INSERT INTO market_depth (parse_id, ah_id, item_id, depth) "
-        "VALUES (%s, %s, %s, %s)"
+    _insert_market_with_parsed_at(
+        conn,
+        "INSERT INTO market_depth (parse_id, ah_id, item_id, depth, parsed_at) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        rows,
     )
-    with conn.cursor() as cur:
-        for batch in _batched(rows):
-            cur.executemany(sql, batch)
-    conn.commit()
 
 
 def market_spread_exists(conn: Connection, parse_id: int, ah_id: int) -> bool:
@@ -496,11 +535,9 @@ def insert_market_spreads(
     """rows: (parse_id, ah_id, item_id, spread_pct)"""
     if not rows:
         return
-    sql = (
-        "INSERT INTO market_spread (parse_id, ah_id, item_id, spread) "
-        "VALUES (%s, %s, %s, %s)"
+    _insert_market_with_parsed_at(
+        conn,
+        "INSERT INTO market_spread (parse_id, ah_id, item_id, spread, parsed_at) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        rows,
     )
-    with conn.cursor() as cur:
-        for batch in _batched(rows):
-            cur.executemany(sql, batch)
-    conn.commit()

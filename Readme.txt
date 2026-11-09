@@ -20,13 +20,16 @@ Database (PostgreSQL 18 + PostGIS/Timescale/pg_cron via LocInfra):
 
 On startup the app applies migrations once under wowahf/db/migrations/.
 MariaDB-era modules 001–009 are no-ops; 010_pg_baseline is the Postgres
-schema (public tables + maintenance functions). House tables live in
-schemas data_raw / data_aggregated / data_watch / data_transactions and
-are created on demand.
+schema; 011_space_optimize drops pgloader duplicate indexes, tightens
+types, keeps only the last 2 raw parses, and converts market_*/aggr/trans
+to Timescale hypertables with compression (history retained).
+
+House tables live in schemas data_raw / data_aggregated / data_watch /
+data_transactions and are created on demand.
 
 Raw purge and watch cull run via pg_cron (scheduled by LocInfra
 setup-auth as postgres once the maintenance_* functions exist):
-    - purge_ah_raw_daily — 15 3 * * *
+    - purge_ah_raw_daily — 20 * * * * (keeps last 2 parse_ids of ah_raw_*)
     - cull_ah_watch_8h — 20 */8 * * *
 
 Tables:
@@ -34,13 +37,13 @@ Tables:
     - parses — id, parsed_at (Blizzard AH Last-Modified, not wall clock)
     - auction_houses — id, name
     - items — id, name, is_commodity, name_status (pending/ok/missing)
-    - market_stats — parse_id, ah_id, metric, value (house-level only)
-    - market_price — parse_id, ah_id, item_id, price (unit copper)
-    - market_depth — parse_id, ah_id, item_id, depth (units)
-    - market_spread — parse_id, ah_id, item_id, spread (% in main cluster)
-    - ah_raw_{houseId} — …, is_commodity (denormalized from items)
-    - ah_aggr_{houseId} — id, item_id, parse_id, price, amount
-    - ah_trans_{houseId} — …, is_commodity
+    - market_stats — parse_id, ah_id, metric, value, parsed_at (hypertable)
+    - market_price — parse_id, ah_id, item_id, price, parsed_at (hypertable)
+    - market_depth — parse_id, ah_id, item_id, depth, parsed_at (hypertable)
+    - market_spread — parse_id, ah_id, item_id, spread, parsed_at (hypertable)
+    - ah_raw_{houseId} — PK (auc_id, parse_id); short scratch buffer
+    - ah_aggr_{houseId} — item_id, parse_id, parsed_at, price, amount (hypertable)
+    - ah_trans_{houseId} — …, is_commodity (hypertable)
     - ah_watch_{houseId} — auc_id, first_time_left, short_seen_at, active
 
 Item names come from static-forever /data/wow/item/{id}. A separate items
