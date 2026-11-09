@@ -181,18 +181,28 @@ def backfill_raw_is_commodity_from_items(
     return int(updated)
 
 
-def list_items_pending_names(conn: Connection, limit: int = 200) -> list[int]:
+def list_items_by_name_status(
+    conn: Connection, status: str, limit: int = 200
+) -> list[int]:
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT id FROM items
-            WHERE name_status = 'pending'
-            ORDER BY id ASC
+            WHERE name_status = %s
+            ORDER BY updated_at ASC, id ASC
             LIMIT %s
             """,
-            (limit,),
+            (status, limit),
         )
         return [int(r[0]) for r in cur.fetchall()]
+
+
+def list_items_pending_names(conn: Connection, limit: int = 200) -> list[int]:
+    return list_items_by_name_status(conn, "pending", limit=limit)
+
+
+def list_items_missing_names(conn: Connection, limit: int = 200) -> list[int]:
+    return list_items_by_name_status(conn, "missing", limit=limit)
 
 
 def set_item_name(

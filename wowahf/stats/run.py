@@ -3,7 +3,6 @@ from __future__ import annotations
 import numpy as np
 
 from wowahf.db.connection import connect
-from wowahf.db.migrate import migrate
 from wowahf.db.writes import (
     insert_market_depths,
     insert_market_prices,
@@ -193,7 +192,6 @@ def run_stats() -> None:
     log("stats: started")
     conn = connect()
     try:
-        migrate(conn)
         parse_ids = list_parse_ids(conn)
         house_ids = list_house_ids(conn)
         if not parse_ids or not house_ids:

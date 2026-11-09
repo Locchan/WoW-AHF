@@ -1,11 +1,7 @@
 from datetime import datetime, timezone
 
-from wowahf.blizzard.ah_fetcher import (
-    get_ah_data,
-    get_blizzard_api_obj,
-)
+from wowahf.blizzard.ah_fetcher import get_ah_data
 from wowahf.db.connection import connect
-from wowahf.db.migrate import migrate
 from wowahf.db.writes import (
     backfill_raw_is_commodity_from_items,
     create_parse,
@@ -21,23 +17,19 @@ from wowahf.db.writes import (
     upsert_watch,
 )
 from wowahf.pipeline.crunch import aggregate_by_item_price, compute_transactions
-from wowahf.pipeline.items import resolve_pending_item_names
 from wowahf.pipeline.normalize import normalize_listings
 from wowahf.utils.log import log
 from wowahf.utils.shutdown import stop_requested
 
 
 def run_parse() -> int:
-    """Fetch AH data, migrate schema, crunch, and persist. Returns parse_id."""
+    """Fetch AH data, crunch, and persist. Returns parse_id."""
     log("parse: started")
     conn = connect()
     try:
-        migrate(conn)
-
         now = datetime.now(timezone.utc)
         parse_id = create_parse(conn, now)
 
-        api = get_blizzard_api_obj()
         data = get_ah_data(include_listings=True)
         prev_id = previous_parse_id(conn, parse_id)
         houses = data["houses"]
@@ -82,15 +74,10 @@ def run_parse() -> int:
 
             processed += 1
 
-        ok, missing = (0, 0)
-        if not stop_requested():
-            ok, missing = resolve_pending_item_names(conn, api)
-
         touch_parse(conn, parse_id, datetime.now(timezone.utc))
         log(
             f"parse: finished parse_id={parse_id} "
-            f"houses={processed}/{len(houses)} "
-            f"item_names ok={ok} missing={missing}"
+            f"houses={processed}/{len(houses)}"
         )
         return parse_id
     finally:

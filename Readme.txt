@@ -18,8 +18,9 @@ Database:
     - DB_DATABASE
 
 On startup the app creates the database if missing and applies migrations
-under wowahf/db/migrations/. Add new schema changes as a new migration
-module and register it in wowahf/db/migrations/__init__.py ALL list.
+once (only at process start) under wowahf/db/migrations/. Add new schema
+changes as a new migration module and register it in
+wowahf/db/migrations/__init__.py ALL list.
 
 Migration 002 installs MariaDB event purge_ah_raw_daily (procedure
 purge_old_ah_raw) which once per day deletes ah_raw_* rows whose parse is
@@ -41,15 +42,21 @@ Tables:
     - ah_trans_{houseId} — …, is_commodity
     - ah_watch_{houseId} — auc_id, first_time_left, short_seen_at, active
 
-Item names come from static-forever /data/wow/item/{id}. Many AH ids 404;
-those are stored as name_status=missing and not retried every run.
-is_commodity is learned from which AH feed an item_id appears on, stored
-in items, and copied onto raw rows for only the item_ids seen this parse.
+Item names come from static-forever /data/wow/item/{id}. A separate items
+job every 10 minutes resolves up to 100 pending and 100 previously-missing
+ids (oldest updated_at first). 404s stay name_status=missing and are
+retried on later passes. is_commodity is learned from which AH feed an
+item_id appears on, stored in items, and copied onto raw rows for only the
+item_ids seen this parse.
 
 price is buyout for normal auctions and unit_price for commodities.
 Bid-only auctions (no buyout) are skipped.
 
-main.py runs parse (when due), then always runs stats backfill.
+main.py migrates once, then starts a threaded JobManager (wowahf/jobs):
+    - parse — due every 1h after last parses.parsed_at; chains stats
+    - stats — on startup and after each successful parse
+    - items — on startup and every 10 minutes after each finish
+Jobs run in their own threads; a job already running is not re-spawned.
 
 market_stats metrics (per ah_id + parse_id; item_id=0 unless noted):
     - market_value_total — copper to buy out AH (top outliers culled)
@@ -77,9 +84,7 @@ Run:
     poetry install
     poetry run python main.py
 
-main.py loops forever: checks the latest parses.parsed_at, sleeps until
-one hour after that (or starts immediately if overdue / no prior parse),
-runs a parse, then repeats.
+main.py migrates, starts the job manager, and blocks until SIGTERM/SIGINT.
 
 Docker:
     docker build -t wow-ahf .
