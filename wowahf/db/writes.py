@@ -371,6 +371,19 @@ def metric_exists(
         return cur.fetchone() is not None
 
 
+def market_price_exists(conn: Connection, parse_id: int, ah_id: int) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM market_price
+            WHERE parse_id = %s AND ah_id = %s
+            LIMIT 1
+            """,
+            (parse_id, ah_id),
+        )
+        return cur.fetchone() is not None
+
+
 def insert_market_stats(
     conn: Connection,
     rows: Sequence[tuple[int, int, str, int | None, float | int]],
@@ -388,5 +401,22 @@ def insert_market_stats(
     ]
     with conn.cursor() as cur:
         for batch in _batched(payload):
+            cur.executemany(sql, batch)
+    conn.commit()
+
+
+def insert_market_prices(
+    conn: Connection,
+    rows: Sequence[tuple[int, int, int, int]],
+) -> None:
+    """rows: (parse_id, ah_id, item_id, price) — price in copper."""
+    if not rows:
+        return
+    sql = (
+        "INSERT INTO market_price (parse_id, ah_id, item_id, price) "
+        "VALUES (%s, %s, %s, %s)"
+    )
+    with conn.cursor() as cur:
+        for batch in _batched(rows):
             cur.executemany(sql, batch)
     conn.commit()

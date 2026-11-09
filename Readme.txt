@@ -33,6 +33,7 @@ Tables:
     - auction_houses — id, name
     - items — id, name, is_commodity, name_status (pending/ok/missing)
     - market_stats — parse_id, ah_id, metric, item_id, value
+    - market_price — parse_id, ah_id, item_id, price (unit copper)
     - ah_raw_{houseId} — …, is_commodity (denormalized from items)
     - ah_aggr_{houseId} — id, item_id, parse_id, price, amount
     - ah_trans_{houseId} — …, is_commodity
@@ -58,9 +59,19 @@ market_stats metrics (per ah_id + parse_id; item_id=0 unless noted):
     - unique_items — distinct item ids listed
     - sold_unique_items — distinct item ids in ah_trans
     - inflation_rate — median % change of high-volume items
-    - market_price (per item) — min of main volume price cluster
     - market_depth (per item) — units at <= market_price * 1.05
     - spread (per item) — (high-low)/market_price % inside main cluster
+
+market_price table (per item):
+    - price — min of main volume price cluster (copper per unit)
+
+Grafana example:
+    SELECT p.parsed_at AS time, mp.price / 10000 AS value
+    FROM market_price mp
+    JOIN parses p ON p.id = mp.parse_id
+    WHERE mp.ah_id = 110 AND mp.item_id = <ITEM>
+      AND $__timeFilter(p.parsed_at)
+    ORDER BY p.parsed_at;
 
 ah_trans only includes lots whose first seen time_left was LONG or VERY_LONG.
 SHORT/MEDIUM still go into raw and aggr. Once a tracked lot is seen as SHORT,

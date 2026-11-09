@@ -5,11 +5,13 @@ import numpy as np
 from wowahf.db.connection import connect
 from wowahf.db.migrate import migrate
 from wowahf.db.writes import (
+    insert_market_prices,
     insert_market_stats,
     list_house_ids,
     list_parse_ids,
     load_raw_for_parse,
     load_trans_for_parse,
+    market_price_exists,
     metric_exists,
     previous_parse_id,
 )
@@ -39,7 +41,6 @@ METRIC_VOLUME_TOTAL = "volume_total"
 METRIC_UNIQUE_ITEMS = "unique_items"
 METRIC_SOLD_UNIQUE_ITEMS = "sold_unique_items"
 METRIC_INFLATION = "inflation_rate"
-METRIC_PRICE = "market_price"
 METRIC_DEPTH = "market_depth"
 METRIC_SPREAD = "spread"
 
@@ -143,7 +144,7 @@ def _compute_house_parse(conn, house_id: int, parse_id: int) -> int:
             sold_unique_items(t_items),
         )
 
-    need_price = not metric_exists(conn, parse_id, house_id, METRIC_PRICE)
+    need_price = not market_price_exists(conn, parse_id, house_id)
     need_depth = not metric_exists(conn, parse_id, house_id, METRIC_DEPTH)
     need_spread = not metric_exists(conn, parse_id, house_id, METRIC_SPREAD)
     need_inflation = not metric_exists(conn, parse_id, house_id, METRIC_INFLATION)
@@ -152,10 +153,11 @@ def _compute_house_parse(conn, house_id: int, parse_id: int) -> int:
     if need_price or need_depth or need_spread or need_inflation:
         feats = item_market_features(item_ids, prices, amounts, flags)
 
+    price_rows: list[tuple[int, int, int, int]] = []
     if feats is not None:
         if need_price:
             for item_id, f in feats.items():
-                _append(rows_out, parse_id, house_id, METRIC_PRICE, f.market_price, item_id)
+                price_rows.append((parse_id, house_id, item_id, f.market_price))
         if need_depth:
             for item_id, f in feats.items():
                 _append(rows_out, parse_id, house_id, METRIC_DEPTH, f.depth, item_id)
@@ -178,7 +180,8 @@ def _compute_house_parse(conn, house_id: int, parse_id: int) -> int:
                 _append(rows_out, parse_id, house_id, METRIC_INFLATION, rate)
 
     insert_market_stats(conn, rows_out)
-    return len(rows_out)
+    insert_market_prices(conn, price_rows)
+    return len(rows_out) + len(price_rows)
 
 
 def run_stats() -> None:
