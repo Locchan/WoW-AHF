@@ -269,7 +269,7 @@ def _replace_raw_purge(cur) -> None:
 def _drop_unique_and_pk(cur, schema: str, table: str) -> None:
     cur.execute(
         """
-        SELECT c.conname, c.contype
+        SELECT c.conname
         FROM pg_constraint c
         JOIN pg_class t ON t.oid = c.conrelid
         JOIN pg_namespace n ON n.oid = t.relnamespace
@@ -277,10 +277,26 @@ def _drop_unique_and_pk(cur, schema: str, table: str) -> None:
         """,
         (schema, table),
     )
-    for name, _ctype in cur.fetchall():
+    for (name,) in cur.fetchall():
         cur.execute(
             f'ALTER TABLE "{schema}"."{table}" DROP CONSTRAINT "{name}"'
         )
+    # Unique indexes that are not constraints still block create_hypertable.
+    cur.execute(
+        """
+        SELECT i.relname
+        FROM pg_index x
+        JOIN pg_class i ON i.oid = x.indexrelid
+        JOIN pg_class t ON t.oid = x.indrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = %s
+          AND t.relname = %s
+          AND x.indisunique
+        """,
+        (schema, table),
+    )
+    for (name,) in cur.fetchall():
+        cur.execute(f'DROP INDEX IF EXISTS "{schema}"."{name}"')
 
 
 def _add_parsed_at_market(cur, table: str) -> None:
