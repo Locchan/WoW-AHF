@@ -15,6 +15,7 @@ from wowahf.db.migrations import (
     m012_trans_candle,
     m013_raw_keep3,
     m014_trans_lots,
+    m015_raw_keep_25,
 )
 
 ALL = [
@@ -32,4 +33,5 @@ ALL = [
     m012_trans_candle,
     m013_raw_keep3,
     m014_trans_lots,
+    m015_raw_keep_25,
 ]
