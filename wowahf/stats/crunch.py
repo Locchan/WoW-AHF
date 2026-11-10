@@ -105,14 +105,23 @@ def market_value_total(
 
 
 def market_value_trans(
-    prices: np.ndarray, amounts: np.ndarray, is_commodity: np.ndarray
+    prices: np.ndarray,
+    amounts: np.ndarray,
+    is_commodity: np.ndarray,
+    item_ids: np.ndarray,
 ) -> int:
+    """
+    Inferred sales value with the same per-item outlier-cluster cull as
+    market_value_total (junk commodity unit prices must not dominate turnover).
+    """
     if len(prices) == 0:
         return 0
-    total = 0
+    units = np.empty(len(prices), dtype=np.int64)
     for i in range(len(prices)):
-        total += listing_value(int(prices[i]), int(amounts[i]), bool(is_commodity[i]))
-    return int(total)
+        units[i] = unit_price(
+            int(prices[i]), int(amounts[i]), bool(is_commodity[i])
+        )
+    return market_value_total(prices, amounts, is_commodity, item_ids, units)
 
 
 def listing_count(n_rows: int) -> int:

@@ -106,7 +106,7 @@ def _compute_house_parse(conn, house_id: int, parse_id: int) -> int:
         _append(rows_out, parse_id, house_id, METRIC_TOTAL, total_val)
 
     if need_trans or need_tvalue or need_trate:
-        trans_val = market_value_trans(t_prices, t_amounts, t_flags)
+        trans_val = market_value_trans(t_prices, t_amounts, t_flags, t_items)
     if need_trans:
         _append(rows_out, parse_id, house_id, METRIC_TRANS, trans_val)
     if need_tvalue:
