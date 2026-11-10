@@ -8,6 +8,7 @@ from wowahf.db.writes import (
     insert_market_prices,
     insert_market_spreads,
     insert_market_stats,
+    insert_trans_candles,
     list_house_ids,
     list_parse_ids,
     load_raw_for_parse,
@@ -17,11 +18,13 @@ from wowahf.db.writes import (
     market_spread_exists,
     metric_exists,
     previous_parse_id,
+    trans_candle_exists,
 )
 from wowahf.pipeline.normalize import unit_price
 from wowahf.stats.crunch import (
     inflation_rate,
     item_market_features,
+    item_trans_candles,
     listing_count,
     market_value_total,
     market_value_trans,
@@ -180,11 +183,35 @@ def _compute_house_parse(conn, house_id: int, parse_id: int) -> int:
             if rate is not None:
                 _append(rows_out, parse_id, house_id, METRIC_INFLATION, rate)
 
+    candle_rows: list[tuple[int, int, int, int, int, int, int]] = []
+    if not trans_candle_exists(conn, parse_id, house_id) and len(t_items):
+        for item_id, c in item_trans_candles(
+            t_items, t_prices, t_amounts, t_flags
+        ).items():
+            candle_rows.append(
+                (
+                    parse_id,
+                    house_id,
+                    item_id,
+                    c.high,
+                    c.low,
+                    c.volume,
+                    c.turnover,
+                )
+            )
+
     insert_market_stats(conn, rows_out)
     insert_market_prices(conn, price_rows)
     insert_market_depths(conn, depth_rows)
     insert_market_spreads(conn, spread_rows)
-    return len(rows_out) + len(price_rows) + len(depth_rows) + len(spread_rows)
+    insert_trans_candles(conn, candle_rows)
+    return (
+        len(rows_out)
+        + len(price_rows)
+        + len(depth_rows)
+        + len(spread_rows)
+        + len(candle_rows)
+    )
 
 
 def run_stats() -> None:

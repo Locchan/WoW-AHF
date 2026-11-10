@@ -541,3 +541,46 @@ def insert_market_spreads(
         "VALUES (%s, %s, %s, %s, %s)",
         rows,
     )
+
+
+def trans_candle_exists(conn: Connection, parse_id: int, ah_id: int) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM trans_candle
+            WHERE parse_id = %s AND ah_id = %s
+            LIMIT 1
+            """,
+            (parse_id, ah_id),
+        )
+        return cur.fetchone() is not None
+
+
+def insert_trans_candles(
+    conn: Connection,
+    rows: Sequence[tuple[int, int, int, int, int, int, int]],
+) -> None:
+    """
+    rows: (parse_id, ah_id, item_id, high, low, volume, turnover)
+    high/low are unit copper after outlier cull.
+    """
+    if not rows:
+        return
+    by_parse: dict[int, list[tuple]] = {}
+    for row in rows:
+        by_parse.setdefault(int(row[0]), []).append(row)
+    sql = (
+        "INSERT INTO trans_candle "
+        "(parse_id, ah_id, item_id, high, low, volume, turnover, parsed_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (ah_id, item_id, parse_id, parsed_at) DO UPDATE SET "
+        "high = EXCLUDED.high, low = EXCLUDED.low, "
+        "volume = EXCLUDED.volume, turnover = EXCLUDED.turnover"
+    )
+    with conn.cursor() as cur:
+        for parse_id, group in by_parse.items():
+            parsed_at = _parsed_at_for(conn, parse_id)
+            payload = [(*row, parsed_at) for row in group]
+            for batch in _batched(payload):
+                cur.executemany(sql, batch)
+    conn.commit()

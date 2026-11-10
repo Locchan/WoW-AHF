@@ -124,6 +124,78 @@ def market_value_trans(
     return market_value_total(prices, amounts, is_commodity, item_ids, units)
 
 
+@dataclass(frozen=True)
+class TransCandle:
+    """One parse bar for an item: culled high/low unit copper + volume."""
+
+    high: int
+    low: int
+    volume: int
+    turnover: int
+
+
+def item_trans_candles(
+    item_ids: np.ndarray,
+    prices: np.ndarray,
+    amounts: np.ndarray,
+    is_commodity: np.ndarray,
+) -> dict[int, TransCandle]:
+    """
+    Per-item high/low/volume/turnover from inferred sales, keeping only lots
+    whose unit price is within the main volume cluster (same cull as
+    market_value_total). Items that are all-outlier produce no candle.
+    """
+    if len(item_ids) == 0:
+        return {}
+
+    units = np.empty(len(item_ids), dtype=np.int64)
+    for i in range(len(item_ids)):
+        units[i] = unit_price(
+            int(prices[i]), int(amounts[i]), bool(is_commodity[i])
+        )
+
+    order = np.argsort(item_ids)
+    item_ids = item_ids[order]
+    prices = prices[order]
+    amounts = amounts[order]
+    is_commodity = is_commodity[order]
+    units = units[order]
+
+    if len(item_ids) > 1:
+        cuts = np.flatnonzero(item_ids[1:] != item_ids[:-1]) + 1
+    else:
+        cuts = np.array([], dtype=np.int64)
+    starts = np.concatenate((np.array([0], dtype=np.int64), cuts))
+    ends = np.concatenate((cuts, np.array([len(item_ids)], dtype=np.int64)))
+
+    out: dict[int, TransCandle] = {}
+    for start, end in zip(starts.tolist(), ends.tolist()):
+        lvl_p, lvl_v = _price_levels(units[start:end], amounts[start:end])
+        main = _main_cluster_range(lvl_p, lvl_v)
+        if main is None:
+            continue
+        max_keep = int(lvl_p[main[1] - 1])
+        high: int | None = None
+        low: int | None = None
+        volume = 0
+        turnover = 0
+        for i in range(start, end):
+            u = int(units[i])
+            if u > max_keep:
+                continue
+            high = u if high is None or u > high else high
+            low = u if low is None or u < low else low
+            volume += int(amounts[i])
+            turnover += listing_value(
+                int(prices[i]), int(amounts[i]), bool(is_commodity[i])
+            )
+        if high is not None and low is not None:
+            out[int(item_ids[start])] = TransCandle(
+                high=high, low=low, volume=volume, turnover=turnover
+            )
+    return out
+
+
 def listing_count(n_rows: int) -> int:
     return int(n_rows)
 
