@@ -116,7 +116,8 @@ def ensure_house_tables(conn: Connection, house_id: int) -> None:
                 parsed_at TIMESTAMPTZ NOT NULL,
                 price BIGINT NOT NULL,
                 amount INT NOT NULL,
-                is_commodity BOOLEAN NOT NULL DEFAULT FALSE
+                is_commodity BOOLEAN NOT NULL DEFAULT FALSE,
+                lots INT NOT NULL DEFAULT 1
             )
             """
         )

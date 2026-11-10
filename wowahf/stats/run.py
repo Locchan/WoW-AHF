@@ -69,22 +69,24 @@ def _arrays_from_raw(
 
 
 def _arrays_from_trans(
-    rows: list[tuple[int, int, int, int]],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    rows: list[tuple[int, int, int, int, int]],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     if not rows:
         empty = np.array([], dtype=np.int64)
-        return empty, empty, empty, empty
+        return empty, empty, empty, empty, empty
     n = len(rows)
     item_ids = np.empty(n, dtype=np.int64)
     prices = np.empty(n, dtype=np.int64)
     amounts = np.empty(n, dtype=np.int64)
     flags = np.empty(n, dtype=np.int64)
-    for i, (item_id, price, amount, is_commodity) in enumerate(rows):
+    lots = np.empty(n, dtype=np.int64)
+    for i, (item_id, price, amount, is_commodity, lot_n) in enumerate(rows):
         item_ids[i] = item_id
         prices[i] = price
         amounts[i] = amount
         flags[i] = int(is_commodity)
-    return item_ids, prices, amounts, flags
+        lots[i] = int(lot_n)
+    return item_ids, prices, amounts, flags, lots
 
 
 def _metric_value(
@@ -195,7 +197,7 @@ def run_market_value_trans() -> None:
         need_tvalue = not metric_exists(conn, parse_id, house_id, METRIC_TURNOVER_VALUE)
         if not need_trans and not need_tvalue:
             return 0
-        t_items, t_prices, t_amounts, t_flags = _arrays_from_trans(
+        t_items, t_prices, t_amounts, t_flags, _lots = _arrays_from_trans(
             load_trans_for_parse(conn, house_id, parse_id)
         )
         value = market_value_trans(t_prices, t_amounts, t_flags, t_items)
@@ -214,7 +216,7 @@ def run_turnover_volume() -> None:
     def work(conn: Connection, house_id: int, parse_id: int) -> int:
         if metric_exists(conn, parse_id, house_id, METRIC_TURNOVER_VOLUME):
             return 0
-        _i, _p, t_amounts, _f = _arrays_from_trans(
+        _i, _p, t_amounts, _f, _lots = _arrays_from_trans(
             load_trans_for_parse(conn, house_id, parse_id)
         )
         insert_market_stats(
@@ -237,7 +239,7 @@ def run_sold_unique_items() -> None:
     def work(conn: Connection, house_id: int, parse_id: int) -> int:
         if metric_exists(conn, parse_id, house_id, METRIC_SOLD_UNIQUE_ITEMS):
             return 0
-        t_items, _p, _a, _f = _arrays_from_trans(
+        t_items, _p, _a, _f, _lots = _arrays_from_trans(
             load_trans_for_parse(conn, house_id, parse_id)
         )
         insert_market_stats(
@@ -357,7 +359,7 @@ def run_trans_candle() -> None:
     def work(conn: Connection, house_id: int, parse_id: int) -> int:
         if trans_candle_exists(conn, parse_id, house_id):
             return 0
-        t_items, t_prices, t_amounts, t_flags = _arrays_from_trans(
+        t_items, t_prices, t_amounts, t_flags, t_lots = _arrays_from_trans(
             load_trans_for_parse(conn, house_id, parse_id)
         )
         if not len(t_items):
@@ -370,10 +372,11 @@ def run_trans_candle() -> None:
                 c.high,
                 c.low,
                 c.volume,
+                c.units,
                 c.turnover,
             )
             for item_id, c in item_trans_candles(
-                t_items, t_prices, t_amounts, t_flags
+                t_items, t_prices, t_amounts, t_flags, t_lots
             ).items()
         ]
         insert_trans_candles(conn, rows)

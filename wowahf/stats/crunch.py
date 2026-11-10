@@ -126,12 +126,13 @@ def market_value_trans(
 
 @dataclass(frozen=True)
 class TransCandle:
-    """One parse bar for an item: culled high/low unit copper + volume."""
+    """One parse bar: culled high/low unit copper; volume = sold listings."""
 
     high: int
     low: int
-    volume: int
-    turnover: int
+    volume: int  # sold listing count (lots), not copper
+    units: int  # sum of stack sizes
+    turnover: int  # copper (kept for other panels)
 
 
 def item_trans_candles(
@@ -139,18 +140,19 @@ def item_trans_candles(
     prices: np.ndarray,
     amounts: np.ndarray,
     is_commodity: np.ndarray,
+    lots: np.ndarray,
 ) -> dict[int, TransCandle]:
     """
-    Per-item high/low/volume/turnover from inferred sales, keeping only lots
-    whose unit price is within the main volume cluster (same cull as
+    Per-item high/low + sold-listing volume from inferred sales, keeping only
+    lots whose unit price is within the main volume cluster (same cull as
     market_value_total). Items that are all-outlier produce no candle.
     """
     if len(item_ids) == 0:
         return {}
 
-    units = np.empty(len(item_ids), dtype=np.int64)
+    units_arr = np.empty(len(item_ids), dtype=np.int64)
     for i in range(len(item_ids)):
-        units[i] = unit_price(
+        units_arr[i] = unit_price(
             int(prices[i]), int(amounts[i]), bool(is_commodity[i])
         )
 
@@ -159,7 +161,8 @@ def item_trans_candles(
     prices = prices[order]
     amounts = amounts[order]
     is_commodity = is_commodity[order]
-    units = units[order]
+    lots = lots[order]
+    units_arr = units_arr[order]
 
     if len(item_ids) > 1:
         cuts = np.flatnonzero(item_ids[1:] != item_ids[:-1]) + 1
@@ -172,14 +175,10 @@ def item_trans_candles(
     for start, end in zip(starts.tolist(), ends.tolist()):
         # Ignore free/zero unit prices when finding the main cluster so they
         # cannot become max_keep and wipe the real bar.
-        pos = [
-            i
-            for i in range(start, end)
-            if int(units[i]) > 0
-        ]
+        pos = [i for i in range(start, end) if int(units_arr[i]) > 0]
         if not pos:
             continue
-        pos_units = np.fromiter((units[i] for i in pos), dtype=np.int64)
+        pos_units = np.fromiter((units_arr[i] for i in pos), dtype=np.int64)
         pos_amts = np.fromiter((amounts[i] for i in pos), dtype=np.int64)
         lvl_p, lvl_v = _price_levels(pos_units, pos_amts)
         main = _main_cluster_range(lvl_p, lvl_v)
@@ -188,21 +187,27 @@ def item_trans_candles(
         max_keep = int(lvl_p[main[1] - 1])
         high: int | None = None
         low: int | None = None
-        volume = 0
+        sold_lots = 0
+        unit_sum = 0
         turnover = 0
         for i in pos:
-            u = int(units[i])
+            u = int(units_arr[i])
             if u > max_keep:
                 continue
             high = u if high is None or u > high else high
             low = u if low is None or u < low else low
-            volume += int(amounts[i])
+            sold_lots += int(lots[i])
+            unit_sum += int(amounts[i])
             turnover += listing_value(
                 int(prices[i]), int(amounts[i]), bool(is_commodity[i])
             )
         if high is not None and low is not None:
             out[int(item_ids[start])] = TransCandle(
-                high=high, low=low, volume=volume, turnover=turnover
+                high=high,
+                low=low,
+                volume=sold_lots,
+                units=unit_sum,
+                turnover=turnover,
             )
     return out
 

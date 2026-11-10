@@ -74,10 +74,11 @@ def compute_transactions(
     watch: dict[int, tuple[str, datetime | None, bool]],
     parse_id: int,
     disappeared_at: datetime,
-) -> list[tuple[int, int, int, int, int]]:
+) -> list[tuple[int, int, int, int, int, int]]:
     """
     prev_rows: (auc_id, item_id, price, auc_amount, time_left, is_commodity)
-    returns: (item_id, parse_id, price, amount, is_commodity)
+    returns: (item_id, parse_id, price, amount, is_commodity, lots)
+    lots = number of sold listings (auc_ids) at that price level.
     """
     if not prev_rows:
         return []
@@ -127,7 +128,7 @@ def compute_transactions(
         changes = np.concatenate(([0], np.flatnonzero(changed) + 1))
 
     ends = np.concatenate((changes[1:], [len(keys_sorted)]))
-    out: list[tuple[int, int, int, int, int]] = []
+    out: list[tuple[int, int, int, int, int, int]] = []
     for start, end in zip(changes, ends):
         out.append(
             (
@@ -136,6 +137,7 @@ def compute_transactions(
                 int(keys_sorted["price"][start]),
                 int(amounts_sorted[start:end].sum()),
                 int(keys_sorted["is_commodity"][start]),
+                int(end - start),
             )
         )
     return out

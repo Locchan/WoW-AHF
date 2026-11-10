@@ -268,26 +268,34 @@ def insert_aggr_rows(
 def insert_trans_rows(
     conn: Connection,
     house_id: int,
-    rows: Sequence[tuple[int, int, int, int, int]],
+    rows: Sequence[tuple[int, int, int, int, int, int]],
 ) -> None:
-    """rows: (item_id, parse_id, price, amount, is_commodity)"""
+    """rows: (item_id, parse_id, price, amount, is_commodity, lots)"""
     if not rows:
         return
     ensure_house_tables(conn, house_id)
-    by_parse: dict[int, list[tuple[int, int, int, int, int]]] = {}
+    by_parse: dict[int, list[tuple[int, int, int, int, int, int]]] = {}
     for row in rows:
         by_parse.setdefault(row[1], []).append(row)
     sql = (
         f"INSERT INTO {trans_table(house_id)} "
-        "(item_id, parse_id, parsed_at, price, amount, is_commodity) "
-        "VALUES (%s, %s, %s, %s, %s, %s)"
+        "(item_id, parse_id, parsed_at, price, amount, is_commodity, lots) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s)"
     )
     with conn.cursor() as cur:
         for parse_id, group in by_parse.items():
             parsed_at = _parsed_at_for(conn, parse_id)
             payload = [
-                (item_id, parse_id, parsed_at, price, amount, bool(is_commodity))
-                for item_id, _pid, price, amount, is_commodity in group
+                (
+                    item_id,
+                    parse_id,
+                    parsed_at,
+                    price,
+                    amount,
+                    bool(is_commodity),
+                    int(lots),
+                )
+                for item_id, _pid, price, amount, is_commodity, lots in group
             ]
             for batch in _batched(payload):
                 cur.executemany(sql, batch)
@@ -322,18 +330,24 @@ def load_raw_for_parse(
 
 def load_trans_for_parse(
     conn: Connection, house_id: int, parse_id: int
-) -> list[tuple[int, int, int, int]]:
-    """(item_id, price, amount, is_commodity)."""
+) -> list[tuple[int, int, int, int, int]]:
+    """(item_id, price, amount, is_commodity, lots)."""
     ensure_house_tables(conn, house_id)
     with conn.cursor() as cur:
         cur.execute(
-            f"SELECT item_id, price, amount, is_commodity "
+            f"SELECT item_id, price, amount, is_commodity, lots "
             f"FROM {trans_table(house_id)} WHERE parse_id = %s",
             (parse_id,),
         )
         return [
-            (int(item_id), int(price), int(amount), 1 if is_commodity else 0)
-            for item_id, price, amount, is_commodity in cur.fetchall()
+            (
+                int(item_id),
+                int(price),
+                int(amount),
+                1 if is_commodity else 0,
+                int(lots),
+            )
+            for item_id, price, amount, is_commodity, lots in cur.fetchall()
         ]
 
 
@@ -558,11 +572,11 @@ def trans_candle_exists(conn: Connection, parse_id: int, ah_id: int) -> bool:
 
 def insert_trans_candles(
     conn: Connection,
-    rows: Sequence[tuple[int, int, int, int, int, int, int]],
+    rows: Sequence[tuple[int, int, int, int, int, int, int, int]],
 ) -> None:
     """
-    rows: (parse_id, ah_id, item_id, high, low, volume, turnover)
-    high/low are unit copper after outlier cull.
+    rows: (parse_id, ah_id, item_id, high, low, volume, units, turnover)
+    high/low = unit copper; volume = sold listings; units = stack sum.
     """
     if not rows:
         return
@@ -571,11 +585,12 @@ def insert_trans_candles(
         by_parse.setdefault(int(row[0]), []).append(row)
     sql = (
         "INSERT INTO trans_candle "
-        "(parse_id, ah_id, item_id, high, low, volume, turnover, parsed_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+        "(parse_id, ah_id, item_id, high, low, volume, units, turnover, parsed_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
         "ON CONFLICT (ah_id, item_id, parse_id, parsed_at) DO UPDATE SET "
         "high = EXCLUDED.high, low = EXCLUDED.low, "
-        "volume = EXCLUDED.volume, turnover = EXCLUDED.turnover"
+        "volume = EXCLUDED.volume, units = EXCLUDED.units, "
+        "turnover = EXCLUDED.turnover"
     )
     with conn.cursor() as cur:
         for parse_id, group in by_parse.items():
