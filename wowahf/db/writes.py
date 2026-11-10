@@ -557,11 +557,13 @@ def insert_market_spreads(
     )
 
 
-def trans_candle_exists(conn: Connection, parse_id: int, ah_id: int) -> bool:
+def item_transaction_stats_exists(
+    conn: Connection, parse_id: int, ah_id: int
+) -> bool:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT 1 FROM trans_candle
+            SELECT 1 FROM item_transaction_stats
             WHERE parse_id = %s AND ah_id = %s
             LIMIT 1
             """,
@@ -570,13 +572,13 @@ def trans_candle_exists(conn: Connection, parse_id: int, ah_id: int) -> bool:
         return cur.fetchone() is not None
 
 
-def insert_trans_candles(
+def insert_item_transaction_stats(
     conn: Connection,
-    rows: Sequence[tuple[int, int, int, int, int, int, int, int]],
+    rows: Sequence[tuple[int, int, int, int, int, int, int]],
 ) -> None:
     """
-    rows: (parse_id, ah_id, item_id, high, low, volume, units, turnover)
-    high/low = unit copper; volume = sold listings; units = stack sum.
+    rows: (parse_id, ah_id, item_id, low, high, median, tx_count)
+    low/high/median = unit copper; tx_count = sold listings.
     """
     if not rows:
         return
@@ -584,13 +586,12 @@ def insert_trans_candles(
     for row in rows:
         by_parse.setdefault(int(row[0]), []).append(row)
     sql = (
-        "INSERT INTO trans_candle "
-        "(parse_id, ah_id, item_id, high, low, volume, units, turnover, parsed_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+        "INSERT INTO item_transaction_stats "
+        "(parse_id, ah_id, item_id, low, high, median, tx_count, parsed_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
         "ON CONFLICT (ah_id, item_id, parse_id, parsed_at) DO UPDATE SET "
-        "high = EXCLUDED.high, low = EXCLUDED.low, "
-        "volume = EXCLUDED.volume, units = EXCLUDED.units, "
-        "turnover = EXCLUDED.turnover"
+        "low = EXCLUDED.low, high = EXCLUDED.high, "
+        "median = EXCLUDED.median, tx_count = EXCLUDED.tx_count"
     )
     with conn.cursor() as cur:
         for parse_id, group in by_parse.items():

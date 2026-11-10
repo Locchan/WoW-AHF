@@ -41,11 +41,11 @@ Tables:
     - market_price — parse_id, ah_id, item_id, price, parsed_at (hypertable)
     - market_depth — parse_id, ah_id, item_id, depth, parsed_at (hypertable)
     - market_spread — parse_id, ah_id, item_id, spread, parsed_at (hypertable)
-    - trans_candle — per-parse sales high/low/volume/turnover per item
-      (hypertable; unit copper after outlier cull; one bar = one parse)
-    - ah_raw_{houseId} — PK (auc_id, parse_id); short scratch buffer
+    - item_transaction_stats — per-parse sold low/high/median + tx_count
+      (hypertable; unit copper after outlier cull; tx_count = sold listings)
+    - ah_raw_{houseId} — PK (auc_id, parse_id); last 25 parses
     - ah_aggr_{houseId} — item_id, parse_id, parsed_at, price, amount (hypertable)
-    - ah_trans_{houseId} — …, is_commodity (hypertable)
+    - ah_trans_{houseId} — …, is_commodity, lots (hypertable)
     - ah_watch_{houseId} — auc_id, first_time_left, short_seen_at, active
 
 Item names come from static-forever /data/wow/item/{id}. A separate items
@@ -66,7 +66,7 @@ main.py migrates once, then starts a threaded JobManager (wowahf/jobs):
         market_value_total → listing_count → volume_total → unique_items →
         market_value_trans → turnover_volume → sold_unique_items →
         turnover_rate → market_price → market_depth → market_spread →
-        inflation_rate → trans_candle
+        inflation_rate → item_transaction
     - items — on startup and every 10 minutes after each finish
     - event_health — every 10 minutes: pg_cron job presence/active +
       schema_event_runs outcomes / overdue

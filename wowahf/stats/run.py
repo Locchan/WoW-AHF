@@ -9,7 +9,7 @@ from wowahf.db.writes import (
     insert_market_prices,
     insert_market_spreads,
     insert_market_stats,
-    insert_trans_candles,
+    insert_item_transaction_stats,
     list_house_ids,
     list_parse_ids,
     load_raw_for_parse,
@@ -19,13 +19,13 @@ from wowahf.db.writes import (
     market_spread_exists,
     metric_exists,
     previous_parse_id,
-    trans_candle_exists,
+    item_transaction_stats_exists,
 )
 from wowahf.pipeline.normalize import unit_price
 from wowahf.stats.crunch import (
     inflation_rate,
     item_market_features,
-    item_trans_candles,
+    item_transaction_stats,
     listing_count,
     market_value_total,
     market_value_trans,
@@ -355,9 +355,9 @@ def run_inflation_rate() -> None:
     _run_named("stats_inflation_rate", work)
 
 
-def run_trans_candle() -> None:
+def run_item_transaction_stats() -> None:
     def work(conn: Connection, house_id: int, parse_id: int) -> int:
-        if trans_candle_exists(conn, parse_id, house_id):
+        if item_transaction_stats_exists(conn, parse_id, house_id):
             return 0
         t_items, t_prices, t_amounts, t_flags, t_lots = _arrays_from_trans(
             load_trans_for_parse(conn, house_id, parse_id)
@@ -369,20 +369,19 @@ def run_trans_candle() -> None:
                 parse_id,
                 house_id,
                 item_id,
-                c.high,
-                c.low,
-                c.volume,
-                c.units,
-                c.turnover,
+                s.low,
+                s.high,
+                s.median,
+                s.tx_count,
             )
-            for item_id, c in item_trans_candles(
+            for item_id, s in item_transaction_stats(
                 t_items, t_prices, t_amounts, t_flags, t_lots
             ).items()
         ]
-        insert_trans_candles(conn, rows)
+        insert_item_transaction_stats(conn, rows)
         return len(rows)
 
-    _run_named("stats_trans_candle", work)
+    _run_named("stats_item_transaction", work)
 
 
 # Ordered chain after parse / on startup.
@@ -399,5 +398,5 @@ STATS_JOBS: list[tuple[str, object]] = [
     ("stats_market_depth", run_market_depth),
     ("stats_market_spread", run_market_spread),
     ("stats_inflation_rate", run_inflation_rate),
-    ("stats_trans_candle", run_trans_candle),
+    ("stats_item_transaction", run_item_transaction_stats),
 ]

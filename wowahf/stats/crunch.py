@@ -125,27 +125,42 @@ def market_value_trans(
 
 
 @dataclass(frozen=True)
-class TransCandle:
-    """One parse bar: culled high/low unit copper; volume = sold listings."""
+class ItemTransactionStats:
+    """Culled sold prices for one item in one parse."""
 
-    high: int
     low: int
-    volume: int  # sold listing count (lots), not copper
-    units: int  # sum of stack sizes
-    turnover: int  # copper (kept for other panels)
+    high: int
+    median: int  # lots-weighted median unit copper
+    tx_count: int  # sold listing count
 
 
-def item_trans_candles(
+def _lots_weighted_median(unit_prices: list[int], lot_counts: list[int]) -> int:
+    """Median unit price where each sold listing counts once."""
+    pairs = sorted(zip(unit_prices, lot_counts), key=lambda pl: pl[0])
+    total = sum(lot_counts)
+    if total <= 0:
+        return 0
+    # For even N, lower of the two central values (integer copper).
+    target = (total + 1) // 2
+    seen = 0
+    for price, n in pairs:
+        seen += int(n)
+        if seen >= target:
+            return int(price)
+    return int(pairs[-1][0])
+
+
+def item_transaction_stats(
     item_ids: np.ndarray,
     prices: np.ndarray,
     amounts: np.ndarray,
     is_commodity: np.ndarray,
     lots: np.ndarray,
-) -> dict[int, TransCandle]:
+) -> dict[int, ItemTransactionStats]:
     """
-    Per-item high/low + sold-listing volume from inferred sales, keeping only
-    lots whose unit price is within the main volume cluster (same cull as
-    market_value_total). Items that are all-outlier produce no candle.
+    Per-item low/high/median + sold-listing count from inferred sales,
+    keeping only lots in the main volume cluster (same cull as
+    market_value_total). All-outlier items produce no row.
     """
     if len(item_ids) == 0:
         return {}
@@ -158,9 +173,7 @@ def item_trans_candles(
 
     order = np.argsort(item_ids)
     item_ids = item_ids[order]
-    prices = prices[order]
     amounts = amounts[order]
-    is_commodity = is_commodity[order]
     lots = lots[order]
     units_arr = units_arr[order]
 
@@ -171,10 +184,8 @@ def item_trans_candles(
     starts = np.concatenate((np.array([0], dtype=np.int64), cuts))
     ends = np.concatenate((cuts, np.array([len(item_ids)], dtype=np.int64)))
 
-    out: dict[int, TransCandle] = {}
+    out: dict[int, ItemTransactionStats] = {}
     for start, end in zip(starts.tolist(), ends.tolist()):
-        # Ignore free/zero unit prices when finding the main cluster so they
-        # cannot become max_keep and wipe the real bar.
         pos = [i for i in range(start, end) if int(units_arr[i]) > 0]
         if not pos:
             continue
@@ -185,30 +196,22 @@ def item_trans_candles(
         if main is None:
             continue
         max_keep = int(lvl_p[main[1] - 1])
-        high: int | None = None
-        low: int | None = None
-        sold_lots = 0
-        unit_sum = 0
-        turnover = 0
+        kept_prices: list[int] = []
+        kept_lots: list[int] = []
         for i in pos:
             u = int(units_arr[i])
             if u > max_keep:
                 continue
-            high = u if high is None or u > high else high
-            low = u if low is None or u < low else low
-            sold_lots += int(lots[i])
-            unit_sum += int(amounts[i])
-            turnover += listing_value(
-                int(prices[i]), int(amounts[i]), bool(is_commodity[i])
-            )
-        if high is not None and low is not None:
-            out[int(item_ids[start])] = TransCandle(
-                high=high,
-                low=low,
-                volume=sold_lots,
-                units=unit_sum,
-                turnover=turnover,
-            )
+            kept_prices.append(u)
+            kept_lots.append(int(lots[i]))
+        if not kept_prices:
+            continue
+        out[int(item_ids[start])] = ItemTransactionStats(
+            low=min(kept_prices),
+            high=max(kept_prices),
+            median=_lots_weighted_median(kept_prices, kept_lots),
+            tx_count=sum(kept_lots),
+        )
     return out
 
 
