@@ -61,12 +61,17 @@ Bid-only auctions (no buyout) are skipped.
 main.py migrates once, then starts a threaded JobManager (wowahf/jobs):
     - parse — due at parses.parsed_at + 1h (parsed_at = Blizzard Last-Modified
       from the last full fetch). Startup aligns to that; after each parse the
-      next due is LM+1h. Chains stats on success.
-    - stats — on startup and after each successful parse (not on skip)
+      next due is LM+1h. Chains the stats pipeline on success.
+    - stats_* — one job per metric, chained in order (startup + after parse):
+        market_value_total → listing_count → volume_total → unique_items →
+        market_value_trans → turnover_volume → sold_unique_items →
+        turnover_rate → market_price → market_depth → market_spread →
+        inflation_rate → trans_candle
     - items — on startup and every 10 minutes after each finish
     - event_health — every 10 minutes: pg_cron job presence/active +
       schema_event_runs outcomes / overdue
 Jobs run in their own threads; a job already running is not re-spawned.
+
 Watch cull and raw purge run in Postgres (pg_cron), not in the app.
 Event SQL failures are logged to schema_event_runs.
 

@@ -6,7 +6,7 @@ from wowahf.events.run import run_event_health
 from wowahf.items.run import run_item_names
 from wowahf.jobs.manager import Job, JobManager
 from wowahf.pipeline.run import run_parse
-from wowahf.stats.run import run_stats
+from wowahf.stats.run import STATS_JOBS
 from wowahf.utils.http_date import naive_utc_second
 
 PARSE_INTERVAL = timedelta(hours=1)
@@ -33,21 +33,26 @@ def _parse_due_at() -> datetime:
 
 def build_job_manager() -> JobManager:
     mgr = JobManager()
+    first_stats = STATS_JOBS[0][0]
     mgr.register(
         Job(
             name="parse",
             fn=run_parse,
             due_at=_parse_due_at,
-            chain=("stats",),
+            chain=(first_stats,),
         )
     )
-    mgr.register(
-        Job(
-            name="stats",
-            fn=run_stats,
-            run_on_startup=True,
+    for i, (name, fn) in enumerate(STATS_JOBS):
+        nxt = (STATS_JOBS[i + 1][0],) if i + 1 < len(STATS_JOBS) else ()
+        mgr.register(
+            Job(
+                name=name,
+                fn=fn,
+                chain=nxt,
+                # Only the first stats job boots the chain on startup.
+                run_on_startup=(i == 0),
+            )
         )
-    )
     mgr.register(
         Job(
             name="items",

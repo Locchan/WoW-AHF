@@ -1,3 +1,3 @@
-from wowahf.stats.run import run_stats
+from wowahf.stats.run import STATS_JOBS
 
-__all__ = ["run_stats"]
+__all__ = ["STATS_JOBS"]
