@@ -76,6 +76,11 @@ def run_parse() -> int:
 
             if prev_id is not None:
                 prev_rows = load_raw_for_parse(conn, house_id, prev_id)
+                if not prev_rows:
+                    log(
+                        f"parse: warning: house={house_id} prev_parse={prev_id} "
+                        "has no raw rows (purged?); transactions skipped"
+                    )
                 watch = load_watch(conn, house_id)
                 trans_rows = compute_transactions(
                     prev_rows,

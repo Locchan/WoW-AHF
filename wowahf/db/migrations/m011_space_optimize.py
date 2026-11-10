@@ -1,7 +1,8 @@
 VERSION = "011_space_optimize"
 
-# Keep this many newest parses of ah_raw_* (stats needs current + previous).
-RAW_PARSE_KEEP = 2
+# Keep this many newest parses of ah_raw_* (current + previous + spare).
+# Live DBs also get 013_raw_keep3 which rewrites the purge function.
+RAW_PARSE_KEEP = 3
 
 # Compress hypertables once a chunk is older than this (data retained).
 COMPRESS_AFTER = "3 days"

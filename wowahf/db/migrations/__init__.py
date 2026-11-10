@@ -13,6 +13,7 @@ from wowahf.db.migrations import (
     m010_pg_baseline,
     m011_space_optimize,
     m012_trans_candle,
+    m013_raw_keep3,
 )
 
 ALL = [
@@ -28,4 +29,5 @@ ALL = [
     m010_pg_baseline,
     m011_space_optimize,
     m012_trans_candle,
+    m013_raw_keep3,
 ]

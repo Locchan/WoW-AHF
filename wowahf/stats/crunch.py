@@ -170,7 +170,18 @@ def item_trans_candles(
 
     out: dict[int, TransCandle] = {}
     for start, end in zip(starts.tolist(), ends.tolist()):
-        lvl_p, lvl_v = _price_levels(units[start:end], amounts[start:end])
+        # Ignore free/zero unit prices when finding the main cluster so they
+        # cannot become max_keep and wipe the real bar.
+        pos = [
+            i
+            for i in range(start, end)
+            if int(units[i]) > 0
+        ]
+        if not pos:
+            continue
+        pos_units = np.fromiter((units[i] for i in pos), dtype=np.int64)
+        pos_amts = np.fromiter((amounts[i] for i in pos), dtype=np.int64)
+        lvl_p, lvl_v = _price_levels(pos_units, pos_amts)
         main = _main_cluster_range(lvl_p, lvl_v)
         if main is None:
             continue
@@ -179,7 +190,7 @@ def item_trans_candles(
         low: int | None = None
         volume = 0
         turnover = 0
-        for i in range(start, end):
+        for i in pos:
             u = int(units[i])
             if u > max_keep:
                 continue

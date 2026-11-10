@@ -84,13 +84,15 @@ def compute_transactions(
 
     # item_id, price, amount, is_commodity
     sold: list[tuple[int, int, int, int]] = []
-    for auc_id, item_id, price, amount, _tl, is_commodity in prev_rows:
+    for auc_id, item_id, price, amount, tl, is_commodity in prev_rows:
         if auc_id in current_auc_ids:
             continue
         meta = watch.get(auc_id)
         if meta is None:
-            continue
-        first_tl, short_at, _active = meta
+            # Cold watch (e.g. after DB cutover): use prev listing time_left.
+            first_tl, short_at = tl, None
+        else:
+            first_tl, short_at, _active = meta
         if not is_sale_eligible(first_tl, short_at, disappeared_at):
             continue
         sold.append((item_id, price, amount, int(is_commodity)))
