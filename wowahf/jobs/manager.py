@@ -23,7 +23,7 @@ class Job:
     interval: timedelta | None = None
     """Fixed period after each successful finish. Ignored when due_at is set."""
     due_at: DueFn | None = None
-    """Absolute next-run time (e.g. last_parse + 1h). Rechecked each wake."""
+    """Absolute next-run time (e.g. last_parse + 1h10m). Rechecked each wake."""
     chain: tuple[str, ...] = ()
     """Jobs to spawn after a successful run."""
     run_on_startup: bool = False

@@ -26,7 +26,7 @@ from wowahf.utils.shutdown import stop_requested
 def run_parse() -> int:
     """
     Fetch AH data and persist. parses.parsed_at is Blizzard Last-Modified
-    (newest across house responses), which the scheduler uses as LM+1h.
+    (newest across house responses), which the scheduler uses as LM+1h10m.
     """
     log("parse: started")
     conn = connect()
@@ -95,7 +95,7 @@ def run_parse() -> int:
 
         # Ensure final parsed_at is LM (scheduler reads this for next due).
         touch_parse(conn, parse_id, snapshot_at)
-        next_due = snapshot_at + timedelta(hours=1)
+        next_due = snapshot_at + timedelta(hours=1, minutes=10)
         log(
             f"parse: finished parse_id={parse_id} "
             f"houses={processed}/{len(houses)} "
