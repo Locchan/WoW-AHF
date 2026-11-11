@@ -17,6 +17,7 @@ from wowahf.db.migrations import (
     m014_trans_lots,
     m015_raw_keep_25,
     m016_item_transaction_stats,
+    m017_drop_dup_parses,
 )
 
 ALL = [
@@ -36,4 +37,5 @@ ALL = [
     m014_trans_lots,
     m015_raw_keep_25,
     m016_item_transaction_stats,
+    m017_drop_dup_parses,
 ]

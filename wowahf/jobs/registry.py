@@ -1,36 +1,14 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 
-from wowahf.db.connection import connect
-from wowahf.db.writes import last_parsed_at
 from wowahf.events.run import run_event_health
 from wowahf.items.run import run_item_names
 from wowahf.jobs.manager import Job, JobManager
 from wowahf.pipeline.run import run_parse
+from wowahf.pipeline.schedule import parse_due_at
 from wowahf.stats.run import STATS_JOBS
-from wowahf.utils.http_date import naive_utc_second
 
-# Blizzard AH dumps refresh hourly; wait a bit past LM so the new
-# snapshot is published before we fetch.
-PARSE_INTERVAL = timedelta(hours=1, minutes=10)
 ITEMS_INTERVAL = timedelta(minutes=10)
 EVENT_HEALTH_INTERVAL = timedelta(minutes=10)
-
-
-def _parse_due_at() -> datetime:
-    """
-    Next parse = last parses.parsed_at (Blizzard Last-Modified) + 1h10m.
-
-    On startup this aligns to the stored LM; after each parse, touch_parse
-    writes the new LM so the following due shifts accordingly.
-    """
-    conn = connect()
-    try:
-        last = last_parsed_at(conn)
-    finally:
-        conn.close()
-    if last is None:
-        return datetime(1970, 1, 1)
-    return naive_utc_second(last) + PARSE_INTERVAL
 
 
 def build_job_manager() -> JobManager:
@@ -40,7 +18,7 @@ def build_job_manager() -> JobManager:
         Job(
             name="parse",
             fn=run_parse,
-            due_at=_parse_due_at,
+            due_at=parse_due_at,
             chain=(first_stats,),
         )
     )

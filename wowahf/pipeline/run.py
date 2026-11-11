@@ -8,6 +8,7 @@ from wowahf.db.writes import (
     insert_aggr_rows,
     insert_raw_rows,
     insert_trans_rows,
+    last_parsed_at,
     load_raw_for_parse,
     load_watch,
     previous_parse_id,
@@ -18,33 +19,43 @@ from wowahf.db.writes import (
 )
 from wowahf.pipeline.crunch import aggregate_by_item_price, compute_transactions
 from wowahf.pipeline.normalize import normalize_listings
+from wowahf.pipeline.schedule import PARSE_INTERVAL, mark_parse_attempt
 from wowahf.utils.http_date import naive_utc_second
 from wowahf.utils.log import log
 from wowahf.utils.shutdown import stop_requested
 
 
-def run_parse() -> int:
+def run_parse() -> int | bool:
     """
     Fetch AH data and persist. parses.parsed_at is Blizzard Last-Modified
     (newest across house responses), which the scheduler uses as LM+1h10m.
+
+    Returns False (skip) when the snapshot LM has not advanced since the
+    last stored parse, so we do not invent duplicate points.
     """
     log("parse: started")
+    mark_parse_attempt()
+    now = datetime.now(UTC)
+
+    data = get_ah_data(include_listings=True)
+    snapshot_at = data.get("last_modified")
+    if snapshot_at is not None:
+        snapshot_at = naive_utc_second(snapshot_at)
+    else:
+        snapshot_at = naive_utc_second(now)
+        log("parse: warning: no Last-Modified in responses; using wall clock")
+
     conn = connect()
     try:
-        # Wall clock only for watch/trans bookkeeping.
-        now = datetime.now(UTC)
-        # Placeholder row; rewritten to Last-Modified after the fetch.
-        parse_id = create_parse(conn, now)
+        last_lm = last_parsed_at(conn)
+        if last_lm is not None and snapshot_at <= naive_utc_second(last_lm):
+            log(
+                f"parse: snapshot unchanged "
+                f"(LM={snapshot_at.isoformat()}), skip"
+            )
+            return False
 
-        data = get_ah_data(include_listings=True)
-        snapshot_at = data.get("last_modified")
-        if snapshot_at is not None:
-            snapshot_at = naive_utc_second(snapshot_at)
-            touch_parse(conn, parse_id, snapshot_at)
-        else:
-            snapshot_at = naive_utc_second(now)
-            log("parse: warning: no Last-Modified in responses; using wall clock")
-
+        parse_id = create_parse(conn, snapshot_at)
         prev_id = previous_parse_id(conn, parse_id)
         houses = data["houses"]
         processed = 0
@@ -93,9 +104,8 @@ def run_parse() -> int:
 
             processed += 1
 
-        # Ensure final parsed_at is LM (scheduler reads this for next due).
         touch_parse(conn, parse_id, snapshot_at)
-        next_due = snapshot_at + timedelta(hours=1, minutes=10)
+        next_due = snapshot_at + PARSE_INTERVAL
         log(
             f"parse: finished parse_id={parse_id} "
             f"houses={processed}/{len(houses)} "

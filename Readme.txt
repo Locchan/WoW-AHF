@@ -59,9 +59,8 @@ price is buyout for normal auctions and unit_price for commodities.
 Bid-only auctions (no buyout) are skipped.
 
 main.py migrates once, then starts a threaded JobManager (wowahf/jobs):
-    - parse — due at parses.parsed_at + 1h10m (parsed_at = Blizzard Last-Modified
-      from the last full fetch). Startup aligns to that; after each parse the
-      next due is LM+1h10m. Chains the stats pipeline on success.
+    - parse — due at max(LM + 1h10m, last attempt + 10m). Skips (no new parse
+      row) when Blizzard Last-Modified has not advanced. Chains stats on success.
     - stats_* — one job per metric, chained in order (startup + after parse):
         market_value_total → listing_count → volume_total → unique_items →
         market_value_trans → turnover_volume → sold_unique_items →
