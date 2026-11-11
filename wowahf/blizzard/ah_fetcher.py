@@ -187,39 +187,80 @@ def get_house_commodities(
         raise
 
 
+def _max_lm(
+    newest: datetime | None, *candidates: datetime | None
+) -> datetime | None:
+    for lm in candidates:
+        if lm is None:
+            continue
+        lm_naive = naive_utc_second(lm)
+        if newest is None or lm_naive > newest:
+            newest = lm_naive
+    return newest
+
+
+def peek_ah_last_modified(api: BlizzardApiClient | None = None) -> datetime | None:
+    """
+    Newest Last-Modified across houses without keeping listing bodies.
+    Used to skip unchanged snapshots before allocating a parse row.
+    """
+    api = api or get_blizzard_api_obj()
+    houses = (get_auction_houses(api).get("auctions") or [])
+    newest: datetime | None = None
+    for house in houses:
+        house_id = house["id"]
+        auctions_doc, auc_lm = get_house_auctions(house_id, api)
+        commodities_doc, com_lm = get_house_commodities(house_id, api)
+        del auctions_doc, commodities_doc
+        newest = _max_lm(newest, auc_lm, com_lm)
+    return newest
+
+
+def iter_ah_houses(api: BlizzardApiClient | None = None):
+    """
+    Yield one house at a time with listings so peak RSS stays near one AH
+    dump (loading every house at once OOMs the 1.5–2Gi container).
+    """
+    api = api or get_blizzard_api_obj()
+    houses = (get_auction_houses(api).get("auctions") or [])
+    for house in houses:
+        house_id = house["id"]
+        name = house.get("name", house_id)
+        auctions_doc, auc_lm = get_house_auctions(house_id, api)
+        commodities_doc, com_lm = get_house_commodities(house_id, api)
+        yield {
+            "id": house_id,
+            "name": name,
+            "auctions": auctions_doc.get("auctions") or [],
+            "commodities": commodities_doc.get("auctions") or [],
+            "last_modified": _max_lm(None, auc_lm, com_lm),
+        }
+
+
 def get_ah_data(*, include_listings: bool = True) -> dict[str, Any]:
     """
     Fetch ruleset houses (+ listings). When include_listings, also sets
     result['last_modified'] to the newest Last-Modified seen (naive UTC).
+
+    Prefer iter_ah_houses() in the parse path to bound memory.
     """
     api = get_blizzard_api_obj()
     ruleset = get_ruleset(api)
-    houses_index = get_auction_houses(api)
-    houses = houses_index.get("auctions") or []
-
     result: dict[str, Any] = {
         "ruleset": ruleset,
         "houses": [],
         "last_modified": None,
     }
     newest: datetime | None = None
-
-    for house in houses:
-        house_id = house["id"]
-        name = house.get("name", house_id)
-        entry: dict[str, Any] = {"id": house_id, "name": name}
-        if include_listings:
-            auctions_doc, auc_lm = get_house_auctions(house_id, api)
-            commodities_doc, com_lm = get_house_commodities(house_id, api)
-            entry["auctions"] = auctions_doc.get("auctions") or []
-            entry["commodities"] = commodities_doc.get("auctions") or []
-            for lm in (auc_lm, com_lm):
-                if lm is None:
-                    continue
-                lm_naive = naive_utc_second(lm)
-                if newest is None or lm_naive > newest:
-                    newest = lm_naive
-        result["houses"].append(entry)
-
+    if include_listings:
+        for entry in iter_ah_houses(api):
+            lm = entry.pop("last_modified", None)
+            newest = _max_lm(newest, lm)
+            result["houses"].append(entry)
+    else:
+        for house in (get_auction_houses(api).get("auctions") or []):
+            result["houses"].append(
+                {"id": house["id"], "name": house.get("name", house["id"])}
+            )
     result["last_modified"] = newest
     return result

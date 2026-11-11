@@ -37,9 +37,10 @@ def _naive_utc(value: datetime) -> datetime:
 
 
 def create_parse(conn: Connection, parsed_at: datetime) -> int:
+    """Insert an in-progress parse (ok=FALSE until mark_parse_ok)."""
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO parses (parsed_at) VALUES (%s) RETURNING id",
+            "INSERT INTO parses (parsed_at, ok) VALUES (%s, FALSE) RETURNING id",
             (_naive_utc(parsed_at),),
         )
         parse_id = cur.fetchone()[0]
@@ -56,10 +57,24 @@ def touch_parse(conn: Connection, parse_id: int, parsed_at: datetime) -> None:
     conn.commit()
 
 
-def previous_parse_id(conn: Connection, current_parse_id: int) -> int | None:
+def mark_parse_ok(conn: Connection, parse_id: int) -> None:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT id FROM parses WHERE id < %s ORDER BY id DESC LIMIT 1",
+            "UPDATE parses SET ok = TRUE WHERE id = %s",
+            (parse_id,),
+        )
+    conn.commit()
+
+
+def previous_parse_id(conn: Connection, current_parse_id: int) -> int | None:
+    """Previous successful parse (incomplete rows are ignored)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id FROM parses
+            WHERE id < %s AND ok
+            ORDER BY id DESC LIMIT 1
+            """,
             (current_parse_id,),
         )
         row = cur.fetchone()
@@ -67,15 +82,114 @@ def previous_parse_id(conn: Connection, current_parse_id: int) -> int | None:
 
 
 def last_parsed_at(conn: Connection) -> datetime | None:
+    """Last-Modified of the newest successful parse (drives schedule)."""
     with conn.cursor() as cur:
-        cur.execute("SELECT parsed_at FROM parses ORDER BY id DESC LIMIT 1")
+        cur.execute(
+            "SELECT parsed_at FROM parses WHERE ok ORDER BY id DESC LIMIT 1"
+        )
         row = cur.fetchone()
     return row[0] if row else None
 
 
+def list_incomplete_parse_ids(conn: Connection) -> list[int]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM parses WHERE NOT ok ORDER BY id ASC")
+        return [int(r[0]) for r in cur.fetchall()]
+
+
+def purge_parse_data(conn: Connection, parse_id: int) -> None:
+    """Delete a parse and every row keyed by that parse_id."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT schemaname, tablename
+            FROM pg_tables
+            WHERE (schemaname = 'data_raw' AND tablename ~ '^ah_raw_[0-9]+$')
+               OR (schemaname = 'data_aggregated'
+                   AND tablename ~ '^ah_aggr_[0-9]+$')
+               OR (schemaname = 'data_transactions'
+                   AND tablename ~ '^ah_trans_[0-9]+$')
+            ORDER BY 1, 2
+            """
+        )
+        house_tables = [(s, t) for s, t in cur.fetchall()]
+        for schema, table in house_tables:
+            cur.execute(
+                f"DELETE FROM {schema}.{table} WHERE parse_id = %s",
+                (parse_id,),
+            )
+        for table in (
+            "market_stats",
+            "market_price",
+            "market_depth",
+            "market_spread",
+            "item_transaction_stats",
+        ):
+            cur.execute(
+                f"DELETE FROM public.{table} WHERE parse_id = %s",
+                (parse_id,),
+            )
+        cur.execute("DELETE FROM parses WHERE id = %s", (parse_id,))
+    conn.commit()
+
+
+def begin_job_run(conn: Connection, job_name: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO job_runs (job_name, started_at, ok)
+            VALUES (%s, clock_timestamp(), FALSE)
+            RETURNING id
+            """,
+            (job_name,),
+        )
+        run_id = cur.fetchone()[0]
+    conn.commit()
+    return int(run_id)
+
+
+def finish_job_run(conn: Connection, run_id: int, *, ok: bool) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE job_runs
+            SET finished_at = clock_timestamp(), ok = %s
+            WHERE id = %s
+            """,
+            (ok, run_id),
+        )
+    conn.commit()
+
+
+def list_incomplete_job_run_ids(conn: Connection) -> list[tuple[int, str]]:
+    """Latest run per job_name when that run did not finish ok."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (job_name) id, job_name
+            FROM job_runs
+            ORDER BY job_name, id DESC
+            """
+        )
+        latest = [(int(i), str(n)) for i, n in cur.fetchall()]
+        incomplete: list[tuple[int, str]] = []
+        for run_id, name in latest:
+            cur.execute("SELECT ok FROM job_runs WHERE id = %s", (run_id,))
+            row = cur.fetchone()
+            if row is not None and not bool(row[0]):
+                incomplete.append((run_id, name))
+        return incomplete
+
+
+def delete_job_run(conn: Connection, run_id: int) -> None:
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM job_runs WHERE id = %s", (run_id,))
+    conn.commit()
+
+
 def list_parse_ids(conn: Connection) -> list[int]:
     with conn.cursor() as cur:
-        cur.execute("SELECT id FROM parses ORDER BY id ASC")
+        cur.execute("SELECT id FROM parses WHERE ok ORDER BY id ASC")
         return [int(r[0]) for r in cur.fetchall()]
 
 

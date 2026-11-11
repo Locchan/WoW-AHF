@@ -1,6 +1,6 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
-from wowahf.blizzard.ah_fetcher import get_ah_data
+from wowahf.blizzard.ah_fetcher import iter_ah_houses, peek_ah_last_modified
 from wowahf.db.connection import connect
 from wowahf.db.writes import (
     backfill_raw_is_commodity_from_items,
@@ -11,6 +11,7 @@ from wowahf.db.writes import (
     last_parsed_at,
     load_raw_for_parse,
     load_watch,
+    mark_parse_ok,
     previous_parse_id,
     touch_parse,
     upsert_auction_house,
@@ -31,19 +32,18 @@ def run_parse() -> int | bool:
     (newest across house responses), which the scheduler uses as LM+1h10m.
 
     Returns False (skip) when the snapshot LM has not advanced since the
-    last stored parse, so we do not invent duplicate points.
+    last successful parse. ok stays FALSE until the full run finishes.
     """
     log("parse: started")
     mark_parse_attempt()
     now = datetime.now(UTC)
 
-    data = get_ah_data(include_listings=True)
-    snapshot_at = data.get("last_modified")
-    if snapshot_at is not None:
-        snapshot_at = naive_utc_second(snapshot_at)
-    else:
+    snapshot_at = peek_ah_last_modified()
+    if snapshot_at is None:
         snapshot_at = naive_utc_second(now)
         log("parse: warning: no Last-Modified in responses; using wall clock")
+    else:
+        snapshot_at = naive_utc_second(snapshot_at)
 
     conn = connect()
     try:
@@ -57,13 +57,16 @@ def run_parse() -> int | bool:
 
         parse_id = create_parse(conn, snapshot_at)
         prev_id = previous_parse_id(conn, parse_id)
-        houses = data["houses"]
         processed = 0
+        newest = snapshot_at
 
-        for house in houses:
+        for house in iter_ah_houses():
             if stop_requested():
-                log("parse: stop requested, leaving remaining houses for next run")
-                break
+                log(
+                    "parse: stop requested, leaving parse incomplete "
+                    f"(parse_id={parse_id})"
+                )
+                return False
 
             house_id = int(house["id"])
             name = str(house.get("name") or house_id)
@@ -102,14 +105,22 @@ def run_parse() -> int | bool:
                 )
                 insert_trans_rows(conn, house_id, trans_rows)
 
+            house_lm = house.get("last_modified")
+            if house_lm is not None:
+                house_lm = naive_utc_second(house_lm)
+                if house_lm > newest:
+                    newest = house_lm
             processed += 1
+            # Drop large listing payloads before the next house fetch.
+            del rows, current_lots
 
-        touch_parse(conn, parse_id, snapshot_at)
-        next_due = snapshot_at + PARSE_INTERVAL
+        touch_parse(conn, parse_id, newest)
+        mark_parse_ok(conn, parse_id)
+        next_due = newest + PARSE_INTERVAL
         log(
             f"parse: finished parse_id={parse_id} "
-            f"houses={processed}/{len(houses)} "
-            f"last_modified={snapshot_at.isoformat()} "
+            f"houses={processed} "
+            f"last_modified={newest.isoformat()} "
             f"next_due={next_due.isoformat()}"
         )
         return parse_id

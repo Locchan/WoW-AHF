@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Callable
 
+from wowahf.db.connection import connect
+from wowahf.db.writes import begin_job_run, finish_job_run
 from wowahf.utils.log import log
 from wowahf.utils.shutdown import stop_requested, wait
 
@@ -69,9 +71,12 @@ class JobManager:
     def _thread_main(self, name: str) -> None:
         job = self._jobs[name]
         ok = False
+        run_id: int | None = None
+        conn = connect()
         try:
             if stop_requested():
                 return
+            run_id = begin_job_run(conn, name)
             log(f"jobs: starting {name}")
             try:
                 result = job.fn()
@@ -90,6 +95,12 @@ class JobManager:
             for nxt in job.chain:
                 self.spawn(nxt)
         finally:
+            if run_id is not None:
+                try:
+                    finish_job_run(conn, run_id, ok=ok)
+                except Exception as exc:
+                    log(f"jobs: {name} failed to record run status: {exc}")
+            conn.close()
             with self._lock:
                 self._running.discard(name)
                 if (
