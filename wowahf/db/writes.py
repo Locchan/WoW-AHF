@@ -250,10 +250,18 @@ def insert_raw_rows(
     rows: Sequence[ListingRow],
 ) -> None:
     ensure_house_tables(conn, house_id)
+    # Last row wins if auc_id still collides after normalize dedupe.
+    by_id: dict[int, ListingRow] = {r.auc_id: r for r in rows}
     sql = (
         f"INSERT INTO {raw_table(house_id)} "
         "(auc_id, parse_id, item_id, price, auc_amount, auc_time_left, is_commodity) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s)"
+        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (auc_id, parse_id) DO UPDATE SET "
+        "item_id = EXCLUDED.item_id, "
+        "price = EXCLUDED.price, "
+        "auc_amount = EXCLUDED.auc_amount, "
+        "auc_time_left = EXCLUDED.auc_time_left, "
+        "is_commodity = EXCLUDED.is_commodity"
     )
     payload = [
         (
@@ -265,7 +273,7 @@ def insert_raw_rows(
             r.auc_time_left,
             bool(r.is_commodity),
         )
-        for r in rows
+        for r in by_id.values()
     ]
     with conn.cursor() as cur:
         for batch in _batched(payload):

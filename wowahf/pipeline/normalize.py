@@ -68,7 +68,11 @@ def normalize_listings(
             )
         )
 
-    return rows
+    # Blizzard occasionally repeats an auc_id in one dump; PK is (auc_id, parse_id).
+    by_id: dict[int, ListingRow] = {}
+    for row in rows:
+        by_id[row.auc_id] = row
+    return list(by_id.values())
 
 
 def listing_value(price: int, amount: int, is_commodity: bool) -> int:

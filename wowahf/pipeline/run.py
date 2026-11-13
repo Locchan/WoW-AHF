@@ -166,6 +166,8 @@ def run_parse() -> int | bool:
     except Exception:
         if parse_id is not None:
             try:
+                # INSERT may have aborted the txn; purge needs a clean connection.
+                conn.rollback()
                 log(f"parse: failed; purging incomplete parse_id={parse_id}")
                 purge_parse_data(conn, parse_id)
             except Exception as purge_exc:
