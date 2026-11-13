@@ -82,6 +82,10 @@ class JobManager:
                 result = job.fn()
             except Exception as exc:
                 log(f"jobs: {name} failed: {exc}")
+                if not stop_requested():
+                    from wowahf.led import alert
+
+                    alert(f"wow_ahf job '{name}' failed: {exc}")
                 return
             if stop_requested():
                 return

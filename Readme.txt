@@ -18,6 +18,10 @@ Database (PostgreSQL 18 + PostGIS/Timescale/pg_cron via LocInfra):
     - DB_DATABASE
     - DB_PORT (optional, default 5432)
 
+LED alerts (optional; locchan/led SourceHTTP):
+    - LED_HTTP_URL — base URL, e.g. http://host.docker.internal:55501
+      Job failures POST {"message": "..."} to {LED_HTTP_URL}/event.
+
 On startup the app applies migrations once under wowahf/db/migrations/.
 MariaDB-era modules 001–009 are no-ops; 010_pg_baseline is the Postgres
 schema; 011_space_optimize drops pgloader duplicate indexes, tightens
@@ -77,6 +81,7 @@ main.py migrates once, then starts a threaded JobManager (wowahf/jobs):
     - event_health — every 10 minutes: pg_cron job presence/active +
       schema_event_runs outcomes / overdue
 Jobs run in their own threads; a job already running is not re-spawned.
+Parse/job exceptions also send a best-effort LED alert when LED_HTTP_URL is set.
 
 Watch cull and raw purge run in Postgres (pg_cron), not in the app.
 Event SQL failures are logged to schema_event_runs.
