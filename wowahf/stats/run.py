@@ -23,6 +23,7 @@ from wowahf.db.writes import (
     previous_parse_lm,
     item_transaction_stats_exists,
 )
+from wowahf.pipeline.backfill_trans import backfill_missing_transactions
 from wowahf.pipeline.normalize import unit_price
 from wowahf.pipeline.schedule import delta_metrics_ok
 from wowahf.stats.crunch import (
@@ -202,6 +203,17 @@ def run_unique_items() -> None:
         return 1
 
     _run_named("stats_unique_items", work)
+
+
+def run_backfill_transactions() -> None:
+    """Recompute missing ah_trans for past ok parses when raw is still available."""
+    log("stats_backfill_trans: started")
+    conn = connect()
+    try:
+        n = backfill_missing_transactions(conn)
+        log(f"stats_backfill_trans: finished pairs_recomputed={n}")
+    finally:
+        conn.close()
 
 
 def run_market_value_trans() -> None:
@@ -423,6 +435,7 @@ STATS_JOBS: list[tuple[str, object]] = [
     ("stats_listing_count", run_listing_count),
     ("stats_volume_total", run_volume_total),
     ("stats_unique_items", run_unique_items),
+    ("stats_backfill_trans", run_backfill_transactions),
     ("stats_market_value_trans", run_market_value_trans),
     ("stats_turnover_volume", run_turnover_volume),
     ("stats_sold_unique_items", run_sold_unique_items),

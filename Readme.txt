@@ -69,9 +69,11 @@ main.py migrates once, then starts a threaded JobManager (wowahf/jobs):
       Houses are fetched one at a time to bound memory. Chains stats on success.
     - stats_* — one job per metric, chained in order (startup + after parse):
         market_value_total → listing_count → volume_total → unique_items →
-        market_value_trans → turnover_volume → sold_unique_items →
-        turnover_rate → market_price → market_depth → market_spread →
-        inflation_rate → item_transaction
+        backfill_trans → market_value_trans → turnover_volume →
+        sold_unique_items → turnover_rate → market_price → market_depth →
+        market_spread → inflation_rate → item_transaction
+      backfill_trans recomputes missing ah_trans for prior ok parses when
+      prev raw is still kept and the failure-gated delta rules allow it.
     - items — on startup and every 10 minutes after each finish
     - event_health — every 10 minutes: pg_cron job presence/active +
       schema_event_runs outcomes / overdue
@@ -103,7 +105,9 @@ SHORT/MEDIUM still go into raw and aggr. Once a tracked lot is seen as SHORT,
 later disappearances are treated as expiry (not sales). Cancelled/taken-down
 lots count as sold. Sale inference and turnover / inflation / item_transaction
 stats skip a step only when LM gap >1h30m and a parse job failed in between.
-Migration 020 deleted prior gap deltas (LM-only); later logic is failure-gated.
+Missing ah_trans for older ok parses is recomputed on the stats chain when
+previous raw is still retained. Migration 020 deleted prior LM-only gap
+deltas; later logic is failure-gated plus backfill.
 
 Run:
     poetry install
