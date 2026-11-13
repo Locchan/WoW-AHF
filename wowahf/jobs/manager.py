@@ -23,7 +23,7 @@ class Job:
     name: str
     fn: JobFn
     interval: timedelta | None = None
-    """Fixed period after each successful finish. Ignored when due_at is set."""
+    """Fixed period after each finish (ok or failed). Ignored when due_at is set."""
     due_at: DueFn | None = None
     """Absolute next-run time (e.g. last_parse + 1h10m). Rechecked each wake."""
     chain: tuple[str, ...] = ()
@@ -103,11 +103,9 @@ class JobManager:
             conn.close()
             with self._lock:
                 self._running.discard(name)
-                if (
-                    ok
-                    and job.interval is not None
-                    and job.due_at is None
-                ):
+                # Always push the next due forward — otherwise a failed run
+                # leaves a past due and the 1s scheduler wake respawns forever.
+                if job.interval is not None and job.due_at is None:
                     self._next_interval_due[name] = _utc_now() + job.interval
 
     def start(self) -> None:
