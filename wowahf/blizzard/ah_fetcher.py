@@ -1,16 +1,23 @@
 import base64
 import json
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from wowahf.blizzard import BLIZZARD_API_OBJ
 from wowahf.utils.config import get_config_entry
 from wowahf.utils.http_date import naive_utc_second, parse_http_date
+from wowahf.utils.log import log
 
 OAUTH_TOKEN_URL = "https://oauth.battle.net/token"
+TOKEN_REFRESH_MIN_INTERVAL = timedelta(minutes=10)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class BlizzardApiClient:
@@ -22,9 +29,12 @@ class BlizzardApiClient:
         self.region = region
         self.locale = locale
         self._access_token: str | None = None
+        self._token_refreshed_at: datetime | None = None
+        self._token_lock = threading.Lock()
         self.api_host = f"https://{region}.api.blizzard.com"
 
     def _fetch_token(self) -> str:
+        """Fetch a new OAuth token. Caller must hold `_token_lock`."""
         credentials = base64.b64encode(
             f"{self.client_id}:{self.client_secret}".encode()
         ).decode()
@@ -43,13 +53,37 @@ class BlizzardApiClient:
         if not token:
             raise RuntimeError(f"OAuth token response missing access_token: {payload}")
         self._access_token = token
+        self._token_refreshed_at = _utc_now()
         return token
+
+    def _get_access_token(self) -> str:
+        with self._token_lock:
+            if not self._access_token:
+                return self._fetch_token()
+            return self._access_token
+
+    def _maybe_refresh_after_401(self, stale_token: str) -> bool:
+        """
+        Refresh after 401 if the last refresh was >= 10 minutes ago.
+
+        Returns True when the caller should retry (we refreshed, or another
+        thread already replaced `stale_token`).
+        """
+        with self._token_lock:
+            if self._access_token and self._access_token != stale_token:
+                return True
+            if (
+                self._token_refreshed_at is not None
+                and _utc_now() - self._token_refreshed_at < TOKEN_REFRESH_MIN_INTERVAL
+            ):
+                return False
+            log("blizzard: 401 — refreshing OAuth token")
+            self._fetch_token()
+            return True
 
     @property
     def access_token(self) -> str:
-        if not self._access_token:
-            return self._fetch_token()
-        return self._access_token
+        return self._get_access_token()
 
     def _url(self, path: str, namespace: str, *, trailing_slash: bool = False) -> str:
         path = path if path.startswith("/") else f"/{path}"
@@ -63,20 +97,17 @@ class BlizzardApiClient:
         )
         return f"{self.api_host}{path}?{query}"
 
-    def request(
+    def _http(
         self,
-        path: str,
-        namespace: str,
+        url: str,
+        token: str,
         *,
-        method: str = "GET",
-        trailing_slash: bool = False,
-        read_body: bool = True,
+        method: str,
+        read_body: bool,
     ) -> tuple[int, dict[str, str], bytes]:
-        """Low-level request. Returns (status, headers_lower, body)."""
-        url = self._url(path, namespace, trailing_slash=trailing_slash)
         request = urllib.request.Request(
             url,
-            headers={"Authorization": f"Bearer {self.access_token}"},
+            headers={"Authorization": f"Bearer {token}"},
             method=method,
         )
         try:
@@ -96,6 +127,28 @@ class BlizzardApiClient:
                 f"Blizzard API {exc.code} for {url}: "
                 f"{body.decode(errors='replace') if body else ''}"
             ) from exc
+
+    def request(
+        self,
+        path: str,
+        namespace: str,
+        *,
+        method: str = "GET",
+        trailing_slash: bool = False,
+        read_body: bool = True,
+    ) -> tuple[int, dict[str, str], bytes]:
+        """Low-level request. Returns (status, headers_lower, body). Retries once after 401 token refresh."""
+        url = self._url(path, namespace, trailing_slash=trailing_slash)
+        token = self._get_access_token()
+        try:
+            return self._http(url, token, method=method, read_body=read_body)
+        except RuntimeError as exc:
+            if "Blizzard API 401 " not in str(exc):
+                raise
+            if not self._maybe_refresh_after_401(token):
+                raise
+            token = self._get_access_token()
+            return self._http(url, token, method=method, read_body=read_body)
 
     def get(self, path: str, namespace: str, *, trailing_slash: bool = False) -> Any:
         doc, _lm = self.get_with_last_modified(
