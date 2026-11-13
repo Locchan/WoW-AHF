@@ -60,7 +60,10 @@ Bid-only auctions (no buyout) are skipped.
 
 main.py migrates once, then starts a threaded JobManager (wowahf/jobs):
     - parse — due at max(LM + 1h10m, last attempt + 10m). Skips when LM has
-      not advanced. Writes parses.ok=TRUE only after a full finish. On startup,
+      not advanced. Writes parses.ok=TRUE only after a full finish. Watch and
+      sale inference run after every house is fetched; a mid-run failure purges
+      the incomplete parse. If the previous ok LM is >1h30m earlier (missed
+      dump), transactions and delta metrics are skipped for that parse. On startup,
       incomplete parses (ok=FALSE) and incomplete job_runs are purged/cleared.
       Houses are fetched one at a time to bound memory. Chains stats on success.
     - stats_* — one job per metric, chained in order (startup + after parse):
@@ -86,7 +89,7 @@ market_stats metrics (per ah_id + parse_id; item_id=0 unless noted):
     - unique_items — distinct item ids listed
     - sold_unique_items — distinct item ids in ah_trans
     - inflation_rate — volume-weighted mean % change of high-volume items
-      (after jump-culling wild per-item % moves)
+      (after jump-culling wild per-item % moves); skipped when LM gap >1h30m
 
 Per-item tables:
     - market_price.price — min of main volume cluster (copper/unit)
@@ -96,7 +99,10 @@ Per-item tables:
 ah_trans only includes lots whose first seen time_left was LONG or VERY_LONG.
 SHORT/MEDIUM still go into raw and aggr. Once a tracked lot is seen as SHORT,
 later disappearances are treated as expiry (not sales). Cancelled/taken-down
-lots count as sold.
+lots count as sold. Sale inference and turnover / inflation / item_transaction
+stats require the previous ok parse LM within 1h30m (one dump + slack).
+Migration 020 deletes prior ah_trans / delta market_stats / item_transaction
+rows for ok parses whose LM gap exceeded that threshold.
 
 Run:
     poetry install

@@ -81,6 +81,25 @@ def previous_parse_id(conn: Connection, current_parse_id: int) -> int | None:
     return int(row[0]) if row else None
 
 
+def previous_parse_lm(
+    conn: Connection, current_parse_id: int
+) -> tuple[int, datetime] | None:
+    """Previous ok parse id and its Last-Modified (`parsed_at`)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, parsed_at FROM parses
+            WHERE id < %s AND ok
+            ORDER BY id DESC LIMIT 1
+            """,
+            (current_parse_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return int(row[0]), row[1]
+
+
 def last_parsed_at(conn: Connection) -> datetime | None:
     """Last-Modified of the newest successful parse (drives schedule)."""
     with conn.cursor() as cur:
@@ -340,13 +359,17 @@ def set_item_name(
     conn.commit()
 
 
-def _parsed_at_for(conn: Connection, parse_id: int) -> datetime:
+def parsed_at_for(conn: Connection, parse_id: int) -> datetime:
     with conn.cursor() as cur:
         cur.execute("SELECT parsed_at FROM parses WHERE id = %s", (parse_id,))
         row = cur.fetchone()
     if row is None:
         raise ValueError(f"parse_id {parse_id} not found")
     return row[0]
+
+
+def _parsed_at_for(conn: Connection, parse_id: int) -> datetime:
+    return parsed_at_for(conn, parse_id)
 
 
 def insert_aggr_rows(

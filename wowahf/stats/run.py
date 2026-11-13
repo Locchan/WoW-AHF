@@ -18,10 +18,12 @@ from wowahf.db.writes import (
     market_price_exists,
     market_spread_exists,
     metric_exists,
-    previous_parse_id,
+    parsed_at_for,
+    previous_parse_lm,
     item_transaction_stats_exists,
 )
 from wowahf.pipeline.normalize import unit_price
+from wowahf.pipeline.schedule import lm_gap_ok
 from wowahf.stats.crunch import (
     inflation_rate,
     item_market_features,
@@ -37,6 +39,14 @@ from wowahf.stats.crunch import (
 )
 from wowahf.utils.log import log
 from wowahf.utils.shutdown import stop_requested
+
+
+def _delta_prev_ok(conn: Connection, parse_id: int) -> bool:
+    """True when this parse has a previous ok parse within one dump gap."""
+    prev = previous_parse_lm(conn, parse_id)
+    if prev is None:
+        return False
+    return lm_gap_ok(prev[1], parsed_at_for(conn, parse_id))
 
 METRIC_TOTAL = "market_value_total"
 METRIC_TRANS = "market_value_trans"
@@ -197,6 +207,9 @@ def run_market_value_trans() -> None:
         need_tvalue = not metric_exists(conn, parse_id, house_id, METRIC_TURNOVER_VALUE)
         if not need_trans and not need_tvalue:
             return 0
+        # Multi-dump gaps leave ah_trans empty on purpose — do not write zeros.
+        if not _delta_prev_ok(conn, parse_id):
+            return 0
         t_items, t_prices, t_amounts, t_flags, _lots = _arrays_from_trans(
             load_trans_for_parse(conn, house_id, parse_id)
         )
@@ -215,6 +228,8 @@ def run_market_value_trans() -> None:
 def run_turnover_volume() -> None:
     def work(conn: Connection, house_id: int, parse_id: int) -> int:
         if metric_exists(conn, parse_id, house_id, METRIC_TURNOVER_VOLUME):
+            return 0
+        if not _delta_prev_ok(conn, parse_id):
             return 0
         _i, _p, t_amounts, _f, _lots = _arrays_from_trans(
             load_trans_for_parse(conn, house_id, parse_id)
@@ -239,6 +254,8 @@ def run_sold_unique_items() -> None:
     def work(conn: Connection, house_id: int, parse_id: int) -> int:
         if metric_exists(conn, parse_id, house_id, METRIC_SOLD_UNIQUE_ITEMS):
             return 0
+        if not _delta_prev_ok(conn, parse_id):
+            return 0
         t_items, _p, _a, _f, _lots = _arrays_from_trans(
             load_trans_for_parse(conn, house_id, parse_id)
         )
@@ -261,6 +278,8 @@ def run_sold_unique_items() -> None:
 def run_turnover_rate() -> None:
     def work(conn: Connection, house_id: int, parse_id: int) -> int:
         if metric_exists(conn, parse_id, house_id, METRIC_TURNOVER_RATE):
+            return 0
+        if not _delta_prev_ok(conn, parse_id):
             return 0
         total = _metric_value(conn, parse_id, house_id, METRIC_TOTAL)
         trans = _metric_value(conn, parse_id, house_id, METRIC_TRANS)
@@ -331,8 +350,11 @@ def run_inflation_rate() -> None:
     def work(conn: Connection, house_id: int, parse_id: int) -> int:
         if metric_exists(conn, parse_id, house_id, METRIC_INFLATION):
             return 0
-        prev_id = previous_parse_id(conn, parse_id)
-        if prev_id is None:
+        prev = previous_parse_lm(conn, parse_id)
+        if prev is None:
+            return 0
+        prev_id, prev_lm = prev
+        if not lm_gap_ok(prev_lm, parsed_at_for(conn, parse_id)):
             return 0
         raw = load_raw_for_parse(conn, house_id, parse_id)
         item_ids, prices, amounts, flags, _u = _arrays_from_raw(raw)
@@ -358,6 +380,8 @@ def run_inflation_rate() -> None:
 def run_item_transaction_stats() -> None:
     def work(conn: Connection, house_id: int, parse_id: int) -> int:
         if item_transaction_stats_exists(conn, parse_id, house_id):
+            return 0
+        if not _delta_prev_ok(conn, parse_id):
             return 0
         t_items, t_prices, t_amounts, t_flags, t_lots = _arrays_from_trans(
             load_trans_for_parse(conn, house_id, parse_id)

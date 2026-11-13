@@ -19,6 +19,8 @@ from wowahf.db.migrations import (
     m016_item_transaction_stats,
     m017_drop_dup_parses,
     m018_parse_job_ok,
+    m019_raw_keep_ok,
+    m020_purge_gap_deltas,
 )
 
 ALL = [
@@ -40,4 +42,6 @@ ALL = [
     m016_item_transaction_stats,
     m017_drop_dup_parses,
     m018_parse_job_ok,
+    m019_raw_keep_ok,
+    m020_purge_gap_deltas,
 ]

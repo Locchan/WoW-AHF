@@ -12,7 +12,8 @@ from wowahf.db.writes import (
     load_raw_for_parse,
     load_watch,
     mark_parse_ok,
-    previous_parse_id,
+    previous_parse_lm,
+    purge_parse_data,
     touch_parse,
     upsert_auction_house,
     upsert_items,
@@ -20,7 +21,7 @@ from wowahf.db.writes import (
 )
 from wowahf.pipeline.crunch import aggregate_by_item_price, compute_transactions
 from wowahf.pipeline.normalize import normalize_listings
-from wowahf.pipeline.schedule import PARSE_INTERVAL, mark_parse_attempt
+from wowahf.pipeline.schedule import PARSE_INTERVAL, lm_gap_ok, mark_parse_attempt
 from wowahf.utils.http_date import naive_utc_second
 from wowahf.utils.log import log
 from wowahf.utils.shutdown import stop_requested
@@ -33,6 +34,9 @@ def run_parse() -> int | bool:
 
     Returns False (skip) when the snapshot LM has not advanced since the
     last successful parse. ok stays FALSE until the full run finishes.
+
+    Watch + sale inference run only after every house has been fetched, so a
+    mid-run failure cannot leave watch half-updated against a discarded parse.
     """
     log("parse: started")
     mark_parse_attempt()
@@ -46,6 +50,7 @@ def run_parse() -> int | bool:
         snapshot_at = naive_utc_second(snapshot_at)
 
     conn = connect()
+    parse_id: int | None = None
     try:
         last_lm = last_parsed_at(conn)
         if last_lm is not None and snapshot_at <= naive_utc_second(last_lm):
@@ -56,9 +61,20 @@ def run_parse() -> int | bool:
             return False
 
         parse_id = create_parse(conn, snapshot_at)
-        prev_id = previous_parse_id(conn, parse_id)
+        prev = previous_parse_lm(conn, parse_id)
+        prev_id = prev[0] if prev else None
+        infer_sales = prev is not None and lm_gap_ok(prev[1], snapshot_at)
+        if prev is not None and not infer_sales:
+            log(
+                f"parse: LM gap too large for sale inference "
+                f"(prev_id={prev_id} prev_lm={naive_utc_second(prev[1]).isoformat()} "
+                f"lm={snapshot_at.isoformat()}); transactions skipped"
+            )
+
         processed = 0
         newest = snapshot_at
+        # auc_id -> time_left per house; kept until watch/trans after full fetch.
+        house_lots: dict[int, dict[int, str]] = {}
 
         for house in iter_ah_houses():
             if stop_requested():
@@ -85,25 +101,7 @@ def run_parse() -> int | bool:
             aggr_rows = aggregate_by_item_price(rows, parse_id)
             insert_aggr_rows(conn, house_id, aggr_rows)
 
-            current_lots = {r.auc_id: r.auc_time_left for r in rows}
-            upsert_watch(conn, house_id, current_lots, now)
-
-            if prev_id is not None:
-                prev_rows = load_raw_for_parse(conn, house_id, prev_id)
-                if not prev_rows:
-                    log(
-                        f"parse: warning: house={house_id} prev_parse={prev_id} "
-                        "has no raw rows (purged?); transactions skipped"
-                    )
-                watch = load_watch(conn, house_id)
-                trans_rows = compute_transactions(
-                    prev_rows,
-                    set(current_lots),
-                    watch,
-                    parse_id,
-                    now,
-                )
-                insert_trans_rows(conn, house_id, trans_rows)
+            house_lots[house_id] = {r.auc_id: r.auc_time_left for r in rows}
 
             house_lm = house.get("last_modified")
             if house_lm is not None:
@@ -111,8 +109,39 @@ def run_parse() -> int | bool:
                 if house_lm > newest:
                     newest = house_lm
             processed += 1
-            # Drop large listing payloads before the next house fetch.
-            del rows, current_lots
+            del rows
+
+        # Fetch succeeded — now update watch and infer sales against a
+        # complete current snapshot.
+        for house_id, current_lots in house_lots.items():
+            if stop_requested():
+                log(
+                    "parse: stop requested during watch/trans, leaving parse "
+                    f"incomplete (parse_id={parse_id})"
+                )
+                return False
+
+            upsert_watch(conn, house_id, current_lots, now)
+
+            if prev_id is None or not infer_sales:
+                continue
+
+            prev_rows = load_raw_for_parse(conn, house_id, prev_id)
+            if not prev_rows:
+                log(
+                    f"parse: warning: house={house_id} prev_parse={prev_id} "
+                    "has no raw rows (purged?); transactions skipped"
+                )
+                continue
+            watch = load_watch(conn, house_id)
+            trans_rows = compute_transactions(
+                prev_rows,
+                set(current_lots),
+                watch,
+                parse_id,
+                now,
+            )
+            insert_trans_rows(conn, house_id, trans_rows)
 
         touch_parse(conn, parse_id, newest)
         mark_parse_ok(conn, parse_id)
@@ -124,5 +153,13 @@ def run_parse() -> int | bool:
             f"next_due={next_due.isoformat()}"
         )
         return parse_id
+    except Exception:
+        if parse_id is not None:
+            try:
+                log(f"parse: failed; purging incomplete parse_id={parse_id}")
+                purge_parse_data(conn, parse_id)
+            except Exception as purge_exc:
+                log(f"parse: purge after failure failed: {purge_exc}")
+        raise
     finally:
         conn.close()
