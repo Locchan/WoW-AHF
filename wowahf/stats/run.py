@@ -5,6 +5,7 @@ from psycopg import Connection
 
 from wowahf.db.connection import connect
 from wowahf.db.writes import (
+    has_completed_failed_parse_between,
     insert_market_depths,
     insert_market_prices,
     insert_market_spreads,
@@ -23,7 +24,7 @@ from wowahf.db.writes import (
     item_transaction_stats_exists,
 )
 from wowahf.pipeline.normalize import unit_price
-from wowahf.pipeline.schedule import lm_gap_ok
+from wowahf.pipeline.schedule import delta_metrics_ok
 from wowahf.stats.crunch import (
     inflation_rate,
     item_market_features,
@@ -42,11 +43,15 @@ from wowahf.utils.shutdown import stop_requested
 
 
 def _delta_prev_ok(conn: Connection, parse_id: int) -> bool:
-    """True when this parse has a previous ok parse within one dump gap."""
+    """True when deltas are allowed vs the previous ok parse."""
     prev = previous_parse_lm(conn, parse_id)
     if prev is None:
         return False
-    return lm_gap_ok(prev[1], parsed_at_for(conn, parse_id))
+    current_lm = parsed_at_for(conn, parse_id)
+    failed = has_completed_failed_parse_between(conn, prev[1], current_lm)
+    return delta_metrics_ok(
+        prev[1], current_lm, parse_failed_in_gap=failed
+    )
 
 METRIC_TOTAL = "market_value_total"
 METRIC_TRANS = "market_value_trans"
@@ -354,7 +359,11 @@ def run_inflation_rate() -> None:
         if prev is None:
             return 0
         prev_id, prev_lm = prev
-        if not lm_gap_ok(prev_lm, parsed_at_for(conn, parse_id)):
+        current_lm = parsed_at_for(conn, parse_id)
+        failed = has_completed_failed_parse_between(conn, prev_lm, current_lm)
+        if not delta_metrics_ok(
+            prev_lm, current_lm, parse_failed_in_gap=failed
+        ):
             return 0
         raw = load_raw_for_parse(conn, house_id, parse_id)
         item_ids, prices, amounts, flags, _u = _arrays_from_raw(raw)

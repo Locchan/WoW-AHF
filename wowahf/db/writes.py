@@ -100,6 +100,31 @@ def previous_parse_lm(
     return int(row[0]), row[1]
 
 
+def has_completed_failed_parse_between(
+    conn: Connection, after: datetime, before: datetime
+) -> bool:
+    """
+    True if a parse job finished as failed with started_at in (after, before].
+
+    In-progress runs (finished_at IS NULL, ok still false) are ignored so the
+    current parse job does not count against itself.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM job_runs
+            WHERE job_name = 'parse'
+              AND NOT ok
+              AND finished_at IS NOT NULL
+              AND started_at > %s
+              AND started_at <= %s
+            LIMIT 1
+            """,
+            (_naive_utc(after), _naive_utc(before)),
+        )
+        return cur.fetchone() is not None
+
+
 def last_parsed_at(conn: Connection) -> datetime | None:
     """Last-Modified of the newest successful parse (drives schedule)."""
     with conn.cursor() as cur:

@@ -32,6 +32,26 @@ def lm_gap_ok(prev_at: datetime | None, current_at: datetime) -> bool:
     return timedelta(0) < gap <= PARSE_DELTA_MAX
 
 
+def delta_metrics_ok(
+    prev_at: datetime | None,
+    current_at: datetime,
+    *,
+    parse_failed_in_gap: bool,
+) -> bool:
+    """
+    Allow sale inference / turnover / inflation for this step.
+
+    A large LM jump alone is fine (Blizzard delayed the next dump while we
+    only saw unchanged skips). Block only when a parse job actually failed
+    in between — that is when we may have missed a published dump.
+    """
+    if prev_at is None:
+        return False
+    if lm_gap_ok(prev_at, current_at):
+        return True
+    return not parse_failed_in_gap
+
+
 def parse_due_at() -> datetime:
     """
     Next parse = max(last LM + 1h10m, last attempt + 10m).

@@ -5,6 +5,7 @@ from wowahf.db.connection import connect
 from wowahf.db.writes import (
     backfill_raw_is_commodity_from_items,
     create_parse,
+    has_completed_failed_parse_between,
     insert_aggr_rows,
     insert_raw_rows,
     insert_trans_rows,
@@ -21,7 +22,7 @@ from wowahf.db.writes import (
 )
 from wowahf.pipeline.crunch import aggregate_by_item_price, compute_transactions
 from wowahf.pipeline.normalize import normalize_listings
-from wowahf.pipeline.schedule import PARSE_INTERVAL, lm_gap_ok, mark_parse_attempt
+from wowahf.pipeline.schedule import PARSE_INTERVAL, delta_metrics_ok, mark_parse_attempt
 from wowahf.utils.http_date import naive_utc_second
 from wowahf.utils.log import log
 from wowahf.utils.shutdown import stop_requested
@@ -63,12 +64,21 @@ def run_parse() -> int | bool:
         parse_id = create_parse(conn, snapshot_at)
         prev = previous_parse_lm(conn, parse_id)
         prev_id = prev[0] if prev else None
-        infer_sales = prev is not None and lm_gap_ok(prev[1], snapshot_at)
+        failed_in_gap = False
+        if prev is not None:
+            failed_in_gap = has_completed_failed_parse_between(
+                conn, prev[1], now
+            )
+        infer_sales = delta_metrics_ok(
+            prev[1] if prev else None,
+            snapshot_at,
+            parse_failed_in_gap=failed_in_gap,
+        )
         if prev is not None and not infer_sales:
             log(
-                f"parse: LM gap too large for sale inference "
+                f"parse: skipping sale inference after failed parse(s) "
                 f"(prev_id={prev_id} prev_lm={naive_utc_second(prev[1]).isoformat()} "
-                f"lm={snapshot_at.isoformat()}); transactions skipped"
+                f"lm={snapshot_at.isoformat()})"
             )
 
         processed = 0
