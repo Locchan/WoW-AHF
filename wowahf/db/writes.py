@@ -602,6 +602,38 @@ def metric_exists(
         return cur.fetchone() is not None
 
 
+DELTA_METRICS = (
+    "market_value_trans",
+    "turnover_value",
+    "turnover_volume",
+    "sold_unique_items",
+    "turnover_rate",
+    "inflation_rate",
+)
+
+
+def delete_delta_metrics(
+    conn: Connection, parse_id: int, ah_id: int
+) -> None:
+    """Drop sale/inflation stats so the stats chain can rewrite them."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM public.market_stats
+            WHERE parse_id = %s AND ah_id = %s AND metric = ANY(%s)
+            """,
+            (parse_id, ah_id, list(DELTA_METRICS)),
+        )
+        cur.execute(
+            """
+            DELETE FROM public.item_transaction_stats
+            WHERE parse_id = %s AND ah_id = %s
+            """,
+            (parse_id, ah_id),
+        )
+    conn.commit()
+
+
 def market_price_exists(conn: Connection, parse_id: int, ah_id: int) -> bool:
     with conn.cursor() as cur:
         cur.execute(
