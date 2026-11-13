@@ -125,6 +125,24 @@ def has_completed_failed_parse_between(
         return cur.fetchone() is not None
 
 
+def has_unrecoverable_parse_gap(
+    conn: Connection, prev_parse_id: int, current_parse_id: int
+) -> bool:
+    """
+    True when an incomplete parse sits between two ids and has no on-disk
+    snapshot to recover from (a real miss). Snapshot-backed incompletes are
+    recoverable and do not block deltas once ingested.
+    """
+    from wowahf.pipeline.snapshot import snapshot_exists
+
+    for pid in list_incomplete_parse_ids_between(
+        conn, prev_parse_id, current_parse_id
+    ):
+        if not snapshot_exists(pid):
+            return True
+    return False
+
+
 def last_parsed_at(conn: Connection) -> datetime | None:
     """Last-Modified of the newest successful parse (drives schedule)."""
     with conn.cursor() as cur:
@@ -141,8 +159,54 @@ def list_incomplete_parse_ids(conn: Connection) -> list[int]:
         return [int(r[0]) for r in cur.fetchall()]
 
 
-def purge_parse_data(conn: Connection, parse_id: int) -> None:
-    """Delete a parse and every row keyed by that parse_id."""
+def find_incomplete_parse_for_lm(
+    conn: Connection, parsed_at: datetime
+) -> int | None:
+    """Reuse a reserved parse id when retrying the same Blizzard LM."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id FROM parses
+            WHERE NOT ok AND parsed_at = %s
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (_naive_utc(parsed_at),),
+        )
+        row = cur.fetchone()
+    return int(row[0]) if row else None
+
+
+def list_incomplete_parse_ids_between(
+    conn: Connection, after_id: int, before_id: int
+) -> list[int]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id FROM parses
+            WHERE NOT ok AND id > %s AND id < %s
+            ORDER BY id ASC
+            """,
+            (after_id, before_id),
+        )
+        return [int(r[0]) for r in cur.fetchall()]
+
+
+def list_ok_parse_ids_from(conn: Connection, min_id: int) -> list[int]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id FROM parses
+            WHERE ok AND id >= %s
+            ORDER BY id ASC
+            """,
+            (min_id,),
+        )
+        return [int(r[0]) for r in cur.fetchall()]
+
+
+def _delete_parse_keyed_rows(conn: Connection, parse_id: int) -> None:
+    """Delete house/market rows for parse_id (keeps the parses row)."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -173,6 +237,18 @@ def purge_parse_data(conn: Connection, parse_id: int) -> None:
                 f"DELETE FROM public.{table} WHERE parse_id = %s",
                 (parse_id,),
             )
+
+
+def purge_parse_rows(conn: Connection, parse_id: int) -> None:
+    """Clear table data for a parse but keep the reserved parses.id."""
+    _delete_parse_keyed_rows(conn, parse_id)
+    conn.commit()
+
+
+def purge_parse_data(conn: Connection, parse_id: int) -> None:
+    """Delete a parse and every row keyed by that parse_id."""
+    _delete_parse_keyed_rows(conn, parse_id)
+    with conn.cursor() as cur:
         cur.execute("DELETE FROM parses WHERE id = %s", (parse_id,))
     conn.commit()
 

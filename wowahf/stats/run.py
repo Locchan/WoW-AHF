@@ -5,7 +5,7 @@ from psycopg import Connection
 
 from wowahf.db.connection import connect
 from wowahf.db.writes import (
-    has_completed_failed_parse_between,
+    has_unrecoverable_parse_gap,
     insert_market_depths,
     insert_market_prices,
     insert_market_spreads,
@@ -49,7 +49,7 @@ def _delta_prev_ok(conn: Connection, parse_id: int) -> bool:
     if prev is None:
         return False
     current_lm = parsed_at_for(conn, parse_id)
-    failed = has_completed_failed_parse_between(conn, prev[1], current_lm)
+    failed = has_unrecoverable_parse_gap(conn, prev[0], parse_id)
     return delta_metrics_ok(
         prev[1], current_lm, parse_failed_in_gap=failed
     )
@@ -372,7 +372,7 @@ def run_inflation_rate() -> None:
             return 0
         prev_id, prev_lm = prev
         current_lm = parsed_at_for(conn, parse_id)
-        failed = has_completed_failed_parse_between(conn, prev_lm, current_lm)
+        failed = has_unrecoverable_parse_gap(conn, prev_id, parse_id)
         if not delta_metrics_ok(
             prev_lm, current_lm, parse_failed_in_gap=failed
         ):

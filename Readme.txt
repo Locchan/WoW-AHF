@@ -60,13 +60,12 @@ Bid-only auctions (no buyout) are skipped.
 
 main.py migrates once, then starts a threaded JobManager (wowahf/jobs):
     - parse — due at max(LM + 1h10m, last attempt + 10m). Skips when LM has
-      not advanced. Writes parses.ok=TRUE only after a full finish. Watch and
-      sale inference run after every house is fetched; a mid-run failure purges
-      the incomplete parse. If the LM gap is >1h30m *and* a parse job failed
-      in between (missed dump), transactions and delta metrics are skipped;
-      a delayed Blizzard LM alone does not skip them. On startup,
-      incomplete parses (ok=FALSE) and incomplete job_runs are purged/cleared.
-      Houses are fetched one at a time to bound memory. Chains stats on success.
+      not advanced. Reserves parses.id first, downloads the AH dump to a gzip
+      snapshot under /mounted/parses/parse_<id>.json.gz, then ingests from that
+      file. On failure the parse id and complete gzip are kept for recovery;
+      table rows are cleared. On startup, incomplete parses with a snapshot are
+      re-ingested (later delta metrics invalidated); those without a snapshot
+      are purged. Keeps at most 48 gzip snapshots. Chains stats on success.
     - stats_* — one job per metric, chained in order (startup + after parse):
         market_value_total → listing_count → volume_total → unique_items →
         backfill_trans → market_value_trans → turnover_volume →
@@ -92,8 +91,8 @@ market_stats metrics (per ah_id + parse_id; item_id=0 unless noted):
     - unique_items — distinct item ids listed
     - sold_unique_items — distinct item ids in ah_trans
     - inflation_rate — volume-weighted mean % change of high-volume items
-      (after jump-culling wild per-item % moves); skipped only after failed
-      parses leave an LM gap >1h30m
+      (after jump-culling wild per-item % moves); skipped only when an
+      unrecoverable incomplete parse sits in an LM gap >1h30m
 
 Per-item tables:
     - market_price.price — min of main volume cluster (copper/unit)
@@ -104,10 +103,10 @@ ah_trans only includes lots whose first seen time_left was LONG or VERY_LONG.
 SHORT/MEDIUM still go into raw and aggr. Once a tracked lot is seen as SHORT,
 later disappearances are treated as expiry (not sales). Cancelled/taken-down
 lots count as sold. Sale inference and turnover / inflation / item_transaction
-stats skip a step only when LM gap >1h30m and a parse job failed in between.
-Missing ah_trans for older ok parses is recomputed on the stats chain when
-previous raw is still retained. Migration 020 deleted prior LM-only gap
-deltas; later logic is failure-gated plus backfill.
+stats skip a step only when LM gap >1h30m and an incomplete parse without a
+gzip snapshot sits in between. Missing ah_trans is recomputed on the stats
+chain when previous raw is still retained. Recovered parses invalidate later
+delta metrics so jobs recalculate.
 
 Run:
     poetry install
@@ -117,6 +116,7 @@ main.py migrates, starts the job manager, and blocks until SIGTERM/SIGINT.
 
 Docker:
     docker build -t wow-ahf .
-    docker run --rm -v /path/to/config.json:/config.json:ro wow-ahf
+    # Mount the host data dir (config.json + parses/) at /mounted
+    docker run --rm -v /path/to/wow_ahf:/mounted wow-ahf
 
 Config is read from /config.json when that file exists, else ./config.json.

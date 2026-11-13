@@ -8,7 +8,7 @@ from psycopg import Connection
 
 from wowahf.db.writes import (
     delete_delta_metrics,
-    has_completed_failed_parse_between,
+    has_unrecoverable_parse_gap,
     insert_trans_rows,
     list_house_ids,
     list_parse_ids,
@@ -31,6 +31,19 @@ _SENTINEL_METRIC = "market_value_trans"
 _attempted: set[tuple[int, int]] = set()
 
 
+def clear_attempt(parse_id: int, house_id: int | None = None) -> None:
+    if house_id is None:
+        _attempted.difference_update(
+            {k for k in _attempted if k[0] == parse_id}
+        )
+    else:
+        _attempted.discard((parse_id, house_id))
+
+
+def clear_attempts_from(parse_id: int) -> None:
+    _attempted.difference_update({k for k in _attempted if k[0] >= parse_id})
+
+
 def _can_recompute(
     conn: Connection, parse_id: int
 ) -> tuple[int, datetime, datetime] | None:
@@ -40,7 +53,7 @@ def _can_recompute(
         return None
     prev_id, prev_lm = prev
     current_lm = parsed_at_for(conn, parse_id)
-    failed = has_completed_failed_parse_between(conn, prev_lm, current_lm)
+    failed = has_unrecoverable_parse_gap(conn, prev_id, parse_id)
     if not delta_metrics_ok(prev_lm, current_lm, parse_failed_in_gap=failed):
         return None
     return prev_id, prev_lm, current_lm
