@@ -53,15 +53,15 @@ def upgrade(conn) -> None:
             (ids, list(RECALC_METRICS)),
         )
         cur.execute(
-            "DELETE FROM public.market_prices WHERE parse_id = ANY(%s)",
+            "DELETE FROM public.market_price WHERE parse_id = ANY(%s)",
             (ids,),
         )
         cur.execute(
-            "DELETE FROM public.market_depths WHERE parse_id = ANY(%s)",
+            "DELETE FROM public.market_depth WHERE parse_id = ANY(%s)",
             (ids,),
         )
         cur.execute(
-            "DELETE FROM public.market_spreads WHERE parse_id = ANY(%s)",
+            "DELETE FROM public.market_spread WHERE parse_id = ANY(%s)",
             (ids,),
         )
         cur.execute(
