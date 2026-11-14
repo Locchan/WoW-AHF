@@ -4,7 +4,9 @@ from datetime import UTC, datetime, timedelta
 
 from wowahf.db.connection import connect
 from wowahf.db.writes import last_parsed_at
+from wowahf.pipeline.snapshot import newest_snapshot_lm
 from wowahf.utils.http_date import naive_utc_second
+from wowahf.utils.log import log
 
 # Blizzard AH dumps refresh hourly; wait a bit past LM so the new
 # snapshot is published before we fetch.
@@ -54,22 +56,34 @@ def delta_metrics_ok(
     return lm_gap_ok(prev_at, current_at)
 
 
+def _last_known_lm() -> datetime | None:
+    """Prefer DB ok parse LM; fall back to newest on-disk snapshot."""
+    try:
+        conn = connect()
+        try:
+            last = last_parsed_at(conn)
+        finally:
+            conn.close()
+        if last is not None:
+            return naive_utc_second(last)
+    except Exception as exc:
+        log(f"parse_due_at: database unavailable ({exc}); using disk LM")
+    disk = newest_snapshot_lm()
+    return naive_utc_second(disk) if disk is not None else None
+
+
 def parse_due_at() -> datetime:
     """
     Next parse = max(last LM + 1h10m, last attempt + 10m).
 
-    The attempt floor stops a tight loop when Blizzard still serves the
-    previous Last-Modified after the LM+1h10m due time.
+    Last LM comes from DB when reachable, otherwise from on-disk snapshots so
+    downloads keep happening while Postgres is down.
     """
-    conn = connect()
-    try:
-        last = last_parsed_at(conn)
-    finally:
-        conn.close()
+    last = _last_known_lm()
     if last is None:
         due = datetime(1970, 1, 1)
     else:
-        due = naive_utc_second(last) + PARSE_INTERVAL
+        due = last + PARSE_INTERVAL
     if _last_parse_attempt is not None:
         due = max(due, _last_parse_attempt + PARSE_RETRY)
     return due

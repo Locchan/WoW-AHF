@@ -2,18 +2,12 @@ from datetime import UTC, datetime
 
 from wowahf.blizzard.ah_fetcher import iter_ah_houses, peek_ah_last_modified
 from wowahf.db.connection import connect
-from wowahf.db.writes import (
-    create_parse,
-    find_incomplete_parse_for_lm,
-    last_parsed_at,
-    purge_parse_rows,
-)
-from wowahf.pipeline.ingest import ingest_snapshot
+from wowahf.pipeline.import_snapshots import import_missing_snapshots
 from wowahf.pipeline.schedule import PARSE_INTERVAL, mark_parse_attempt
 from wowahf.pipeline.snapshot import (
-    cleanup_old_snapshots,
-    delete_snapshot,
-    snapshot_exists,
+    delete_snapshot_path,
+    find_snapshot_for_lm,
+    pending_partial_path,
     write_snapshot,
 )
 from wowahf.utils.http_date import naive_utc_second
@@ -29,13 +23,21 @@ def _download_houses():
         yield house
 
 
+def _try_connect():
+    try:
+        return connect()
+    except Exception as exc:
+        log(f"parse: database unavailable: {exc}")
+        return None
+
+
 def run_parse() -> int | bool:
     """
-    Download AH data to a gzip snapshot under /mounted/parses, then ingest.
+    Always download a new Blizzard LM to disk first (DB optional), then import
+    any on-disk snapshots that are missing from the database.
 
-    parses.parsed_at is Blizzard Last-Modified. ok stays FALSE until ingest
-    finishes. On failure the parse id and gzip snapshot (if complete) are kept
-    so recovery can finish without re-fetching.
+    Returns the newest imported parse id, or False when there was nothing new
+    to ingest (stats chain is skipped).
     """
     log("parse: started")
     mark_parse_attempt()
@@ -48,61 +50,44 @@ def run_parse() -> int | bool:
     else:
         snapshot_at = naive_utc_second(snapshot_at)
 
-    conn = connect()
-    parse_id: int | None = None
-    snapshot_ready = False
-    try:
-        last_lm = last_parsed_at(conn)
-        if last_lm is not None and snapshot_at <= naive_utc_second(last_lm):
-            log(
-                f"parse: snapshot unchanged "
-                f"(LM={snapshot_at.isoformat()}), skip"
-            )
-            return False
+    existing = find_snapshot_for_lm(snapshot_at)
+    if existing is None:
+        log(f"parse: downloading snapshot lm={snapshot_at.isoformat()}")
+        partial = pending_partial_path(snapshot_at)
+        try:
+            write_snapshot(snapshot_at, _download_houses(), parse_id=None)
+        except Exception:
+            delete_snapshot_path(partial)
+            # Also drop a half-written pending if replace never happened.
+            from wowahf.pipeline.snapshot import pending_path
 
-        # Reuse a reserved id when retrying the same LM after a failed ingest.
-        parse_id = find_incomplete_parse_for_lm(conn, snapshot_at)
-        if parse_id is None:
-            parse_id = create_parse(conn, snapshot_at)
-            log(f"parse: reserved parse_id={parse_id} lm={snapshot_at.isoformat()}")
-        else:
-            log(
-                f"parse: reusing incomplete parse_id={parse_id} "
-                f"lm={snapshot_at.isoformat()}"
-            )
-
-        if not snapshot_exists(parse_id):
-            log(f"parse: downloading snapshot for parse_id={parse_id}")
-            write_snapshot(parse_id, snapshot_at, _download_houses())
-        else:
-            log(f"parse: using existing gzip snapshot parse_id={parse_id}")
-        snapshot_ready = True
-
-        processed = ingest_snapshot(conn, parse_id, now=now)
-        next_due = snapshot_at + PARSE_INTERVAL
+            delete_snapshot_path(pending_path(snapshot_at))
+            raise
+    else:
         log(
-            f"parse: finished parse_id={parse_id} "
-            f"houses={processed} "
-            f"last_modified={snapshot_at.isoformat()} "
-            f"next_due={next_due.isoformat()}"
+            f"parse: snapshot already on disk "
+            f"({existing.path.name}) lm={snapshot_at.isoformat()}"
         )
-        return parse_id
-    except Exception:
-        if parse_id is not None:
-            try:
-                conn.rollback()
-                log(
-                    f"parse: failed; clearing table rows for parse_id={parse_id} "
-                    "(parse id kept)"
-                )
-                purge_parse_rows(conn, parse_id)
-            except Exception as purge_exc:
-                log(f"parse: row cleanup after failure failed: {purge_exc}")
-            if not snapshot_ready:
-                # Incomplete download — drop partial gzip so retry re-fetches.
-                delete_snapshot(parse_id)
-            else:
-                cleanup_old_snapshots()
-        raise
+
+    conn = _try_connect()
+    if conn is None:
+        log(
+            "parse: snapshot saved; will import when database is back "
+            f"(next_due≈{(snapshot_at + PARSE_INTERVAL).isoformat()})"
+        )
+        return False
+
+    try:
+        imported = import_missing_snapshots(conn, now=now)
+        if not imported:
+            log("parse: all on-disk snapshots already in database")
+            return False
+        newest = max(imported)
+        log(
+            f"parse: finished imported={imported} "
+            f"last_modified={snapshot_at.isoformat()} "
+            f"next_due={(snapshot_at + PARSE_INTERVAL).isoformat()}"
+        )
+        return newest
     finally:
         conn.close()

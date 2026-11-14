@@ -48,6 +48,64 @@ def create_parse(conn: Connection, parsed_at: datetime) -> int:
     return int(parse_id)
 
 
+def ensure_parse_id(
+    conn: Connection, parse_id: int, parsed_at: datetime
+) -> int:
+    """
+    Make sure parses.id exists (ok may still be false). Used when importing
+    a parse_{id}.json.gz whose filename already encodes the id.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM parses WHERE id = %s", (parse_id,))
+        if cur.fetchone():
+            cur.execute(
+                "UPDATE parses SET parsed_at = %s WHERE id = %s AND NOT ok",
+                (_naive_utc(parsed_at), parse_id),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO parses (id, parsed_at, ok)
+                VALUES (%s, %s, FALSE)
+                """,
+                (parse_id, _naive_utc(parsed_at)),
+            )
+            cur.execute(
+                """
+                SELECT setval(
+                    pg_get_serial_sequence('parses', 'id'),
+                    (SELECT MAX(id) FROM parses)
+                )
+                """
+            )
+    conn.commit()
+    return int(parse_id)
+
+
+def find_ok_parse_for_lm(
+    conn: Connection, parsed_at: datetime
+) -> int | None:
+    """Successful parse id for this Blizzard Last-Modified, if any."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id FROM parses
+            WHERE ok AND parsed_at = %s
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (_naive_utc(parsed_at),),
+        )
+        row = cur.fetchone()
+    return int(row[0]) if row else None
+
+
+def list_ok_parse_ids(conn: Connection) -> set[int]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM parses WHERE ok")
+        return {int(r[0]) for r in cur.fetchall()}
+
+
 def touch_parse(conn: Connection, parse_id: int, parsed_at: datetime) -> None:
     with conn.cursor() as cur:
         cur.execute(

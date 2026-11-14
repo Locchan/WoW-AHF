@@ -72,11 +72,23 @@ class JobManager:
         job = self._jobs[name]
         ok = False
         run_id: int | None = None
-        conn = connect()
+        conn = None
         try:
             if stop_requested():
                 return
-            run_id = begin_job_run(conn, name)
+            try:
+                conn = connect()
+                run_id = begin_job_run(conn, name)
+            except Exception as exc:
+                # Parse must still download AH dumps while Postgres is down.
+                if name != "parse":
+                    log(f"jobs: {name} failed to open DB: {exc}")
+                    if not stop_requested():
+                        from wowahf.led import alert
+
+                        alert(f"wow_ahf job '{name}' failed: {exc}")
+                    return
+                log(f"jobs: parse starting without DB ({exc})")
             log(f"jobs: starting {name}")
             try:
                 result = job.fn()
@@ -99,12 +111,13 @@ class JobManager:
             for nxt in job.chain:
                 self.spawn(nxt)
         finally:
-            if run_id is not None:
+            if run_id is not None and conn is not None:
                 try:
                     finish_job_run(conn, run_id, ok=ok)
                 except Exception as exc:
                     log(f"jobs: {name} failed to record run status: {exc}")
-            conn.close()
+            if conn is not None:
+                conn.close()
             with self._lock:
                 self._running.discard(name)
                 # Always push the next due forward — otherwise a failed run
