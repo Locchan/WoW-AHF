@@ -23,18 +23,13 @@ def _download_houses():
         yield house
 
 
-def _try_connect():
-    try:
-        return connect()
-    except Exception as exc:
-        log(f"parse: database unavailable: {exc}")
-        return None
-
-
 def run_parse() -> int | bool:
     """
-    Always download a new Blizzard LM to disk first (DB optional), then import
-    any on-disk snapshots that are missing from the database.
+    Download a new Blizzard LM to disk first, then import any on-disk
+    snapshots missing from the database.
+
+    Download does not need Postgres. Import does — connection errors propagate
+    so the job manager can pause schedules until DB returns.
 
     Returns the newest imported parse id, or False when there was nothing new
     to ingest (stats chain is skipped).
@@ -58,7 +53,6 @@ def run_parse() -> int | bool:
             write_snapshot(snapshot_at, _download_houses(), parse_id=None)
         except Exception:
             delete_snapshot_path(partial)
-            # Also drop a half-written pending if replace never happened.
             from wowahf.pipeline.snapshot import pending_path
 
             delete_snapshot_path(pending_path(snapshot_at))
@@ -69,14 +63,7 @@ def run_parse() -> int | bool:
             f"({existing.path.name}) lm={snapshot_at.isoformat()}"
         )
 
-    conn = _try_connect()
-    if conn is None:
-        log(
-            "parse: snapshot saved; will import when database is back "
-            f"(next_due≈{(snapshot_at + PARSE_INTERVAL).isoformat()})"
-        )
-        return False
-
+    conn = connect()
     try:
         imported = import_missing_snapshots(conn, now=now)
         if not imported:

@@ -5,13 +5,17 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Callable
 
-from wowahf.db.connection import connect
+from wowahf.db.connection import connect, is_db_unavailable, ping
 from wowahf.db.writes import begin_job_run, finish_job_run
 from wowahf.utils.log import log
 from wowahf.utils.shutdown import stop_requested, wait
 
 JobFn = Callable[[], None]
 DueFn = Callable[[], datetime]
+
+DB_PING_EVERY = timedelta(seconds=5)
+DB_RETRY_EVERY_S = 5.0
+DB_WAIT_LOG_EVERY_S = 300.0
 
 
 def _utc_now() -> datetime:
@@ -41,6 +45,8 @@ class JobManager:
     _threads: list[threading.Thread] = field(default_factory=list)
     _next_interval_due: dict[str, datetime] = field(default_factory=dict)
     _scheduler: threading.Thread | None = None
+    _db_down: bool = False
+    _last_db_ping_ok: datetime | None = None
 
     def register(self, job: Job) -> None:
         if job.name in self._jobs:
@@ -51,6 +57,9 @@ class JobManager:
         """Start a job in a new thread (skip if unknown, stopping, or already running)."""
         if stop_requested():
             return
+        with self._lock:
+            if self._db_down:
+                return
         if name not in self._jobs:
             log(f"jobs: unknown job '{name}'")
             return
@@ -68,6 +77,74 @@ class JobManager:
             self._threads.append(thread)
             thread.start()
 
+    def _note_db_down(self, exc: BaseException) -> None:
+        """Pause schedules; LED + console once per outage."""
+        with self._lock:
+            first = not self._db_down
+            self._db_down = True
+            self._last_db_ping_ok = None
+        if not first:
+            return
+        msg = f"PostgreSQL unavailable — pausing all schedules: {exc}"
+        log(f"jobs: ERROR {msg}")
+        try:
+            from wowahf.led import alert
+
+            alert(f"wow_ahf: {msg}")
+        except Exception:
+            pass
+
+    def _probe_db(self) -> None:
+        """Raise if DB is unreachable. Throttled successful pings."""
+        now = _utc_now()
+        with self._lock:
+            last_ok = self._last_db_ping_ok
+        if last_ok is not None and now - last_ok < DB_PING_EVERY:
+            return
+        ping()
+        with self._lock:
+            self._last_db_ping_ok = _utc_now()
+
+    def _wait_for_db_and_resume(self) -> None:
+        log("jobs: waiting for PostgreSQL...")
+        last_log = _utc_now()
+        while not stop_requested():
+            try:
+                ping()
+                break
+            except Exception:
+                now = _utc_now()
+                if (now - last_log).total_seconds() >= DB_WAIT_LOG_EVERY_S:
+                    log("jobs: still waiting for PostgreSQL...")
+                    last_log = now
+                if wait(DB_RETRY_EVERY_S):
+                    return
+        if stop_requested():
+            return
+
+        log("jobs: PostgreSQL is back — restarting schedules")
+        with self._lock:
+            self._db_down = False
+            self._last_db_ping_ok = _utc_now()
+            now = _utc_now()
+            for job in self._jobs.values():
+                if job.interval is not None and job.due_at is None:
+                    self._next_interval_due[job.name] = now
+
+        try:
+            from wowahf.recover import recover_after_restart
+
+            recover_after_restart()
+        except Exception as exc:
+            log(f"jobs: recover after outage failed: {exc}")
+            if is_db_unavailable(exc):
+                self._note_db_down(exc)
+                return
+
+        for job in self._jobs.values():
+            if job.run_on_startup:
+                self.spawn(job.name)
+
     def _thread_main(self, name: str) -> None:
         job = self._jobs[name]
         ok = False
@@ -76,23 +153,29 @@ class JobManager:
         try:
             if stop_requested():
                 return
+            with self._lock:
+                if self._db_down:
+                    return
             try:
                 conn = connect()
                 run_id = begin_job_run(conn, name)
             except Exception as exc:
-                # Parse must still download AH dumps while Postgres is down.
-                if name != "parse":
-                    log(f"jobs: {name} failed to open DB: {exc}")
-                    if not stop_requested():
-                        from wowahf.led import alert
-
-                        alert(f"wow_ahf job '{name}' failed: {exc}")
+                if is_db_unavailable(exc):
+                    self._note_db_down(exc)
                     return
-                log(f"jobs: parse starting without DB ({exc})")
+                log(f"jobs: {name} failed to open DB: {exc}")
+                if not stop_requested():
+                    from wowahf.led import alert
+
+                    alert(f"wow_ahf job '{name}' failed: {exc}")
+                return
             log(f"jobs: starting {name}")
             try:
                 result = job.fn()
             except Exception as exc:
+                if is_db_unavailable(exc):
+                    self._note_db_down(exc)
+                    return
                 log(f"jobs: {name} failed: {exc}")
                 if not stop_requested():
                     from wowahf.led import alert
@@ -101,6 +184,9 @@ class JobManager:
                 return
             if stop_requested():
                 return
+            with self._lock:
+                if self._db_down:
+                    return
             # False means intentional skip (e.g. parse: unchanged snapshot).
             if result is False:
                 log(f"jobs: finished {name} (skipped)")
@@ -115,9 +201,15 @@ class JobManager:
                 try:
                     finish_job_run(conn, run_id, ok=ok)
                 except Exception as exc:
-                    log(f"jobs: {name} failed to record run status: {exc}")
+                    if is_db_unavailable(exc):
+                        self._note_db_down(exc)
+                    else:
+                        log(f"jobs: {name} failed to record run status: {exc}")
             if conn is not None:
-                conn.close()
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             with self._lock:
                 self._running.discard(name)
                 # Always push the next due forward — otherwise a failed run
@@ -149,20 +241,41 @@ class JobManager:
 
     def _schedule_loop(self) -> None:
         while not stop_requested():
+            with self._lock:
+                paused = self._db_down
+            if paused:
+                self._wait_for_db_and_resume()
+                continue
+
+            try:
+                self._probe_db()
+            except Exception as exc:
+                if is_db_unavailable(exc):
+                    self._note_db_down(exc)
+                    continue
+                log(f"jobs: unexpected DB probe error: {exc}")
+                if wait(1.0):
+                    break
+                continue
+
             now = _utc_now()
             soonest: datetime | None = None
 
             for name, job in self._jobs.items():
                 if stop_requested():
                     break
-
                 with self._lock:
+                    if self._db_down:
+                        break
                     busy = name in self._running
 
                 if job.due_at is not None:
                     try:
                         due = job.due_at()
                     except Exception as exc:
+                        if is_db_unavailable(exc):
+                            self._note_db_down(exc)
+                            break
                         log(f"jobs: {name} due_at failed: {exc}")
                         continue
                     if not busy and now >= due:

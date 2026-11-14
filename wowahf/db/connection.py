@@ -31,10 +31,47 @@ def ensure_database() -> None:
 
 
 def connect() -> Connection:
-    conn = psycopg.connect(_conninfo(), row_factory=tuple_row, autocommit=False)
+    conn = psycopg.connect(
+        _conninfo(),
+        row_factory=tuple_row,
+        autocommit=False,
+        connect_timeout=5,
+    )
     with conn.cursor() as cur:
         cur.execute(
             "SET search_path TO public, data_raw, data_aggregated, "
             "data_watch, data_transactions"
         )
     return conn
+
+
+def ping() -> None:
+    """Open a short-lived connection and run SELECT 1. Raises on failure."""
+    conn = connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+    finally:
+        conn.close()
+
+
+def is_db_unavailable(exc: BaseException) -> bool:
+    """True when ``exc`` looks like Postgres/network unavailability."""
+    if isinstance(exc, (psycopg.OperationalError, psycopg.InterfaceError)):
+        return True
+    text = f"{exc.__class__.__name__}: {exc}".lower()
+    needles = (
+        "could not connect",
+        "connection refused",
+        "connection reset",
+        "server closed the connection",
+        "name or service not known",
+        "temporary failure in name resolution",
+        "failed to resolve host",
+        "timeout expired",
+        "connection timed out",
+        "no route to host",
+        "network is unreachable",
+        "postgresql",
+    )
+    return any(n in text for n in needles)

@@ -6,7 +6,6 @@ from wowahf.db.connection import connect
 from wowahf.db.writes import last_parsed_at
 from wowahf.pipeline.snapshot import newest_snapshot_lm
 from wowahf.utils.http_date import naive_utc_second
-from wowahf.utils.log import log
 
 # Blizzard AH dumps refresh hourly; wait a bit past LM so the new
 # snapshot is published before we fetch.
@@ -66,8 +65,9 @@ def _last_known_lm() -> datetime | None:
             conn.close()
         if last is not None:
             return naive_utc_second(last)
-    except Exception as exc:
-        log(f"parse_due_at: database unavailable ({exc}); using disk LM")
+    except Exception:
+        # Job manager pauses schedules on DB outage; disk LM is a silent fallback.
+        pass
     disk = newest_snapshot_lm()
     return naive_utc_second(disk) if disk is not None else None
 
