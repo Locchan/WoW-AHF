@@ -30,7 +30,7 @@ from wowahf.stats.crunch import (
     inflation_rate,
     item_market_features,
     item_transaction_stats,
-    listing_count,
+    listing_count_filtered,
     market_value_total,
     market_value_trans,
     sold_unique_items,
@@ -166,9 +166,17 @@ def run_listing_count() -> None:
         if metric_exists(conn, parse_id, house_id, METRIC_LISTING_COUNT):
             return 0
         raw = load_raw_for_parse(conn, house_id, parse_id)
+        item_ids, _p, _a, _f, _u = _arrays_from_raw(raw)
         insert_market_stats(
             conn,
-            [(parse_id, house_id, METRIC_LISTING_COUNT, listing_count(len(raw)))],
+            [
+                (
+                    parse_id,
+                    house_id,
+                    METRIC_LISTING_COUNT,
+                    listing_count_filtered(item_ids),
+                )
+            ],
         )
         return 1
 
@@ -180,10 +188,17 @@ def run_volume_total() -> None:
         if metric_exists(conn, parse_id, house_id, METRIC_VOLUME_TOTAL):
             return 0
         raw = load_raw_for_parse(conn, house_id, parse_id)
-        _i, _p, amounts, _f, _u = _arrays_from_raw(raw)
+        item_ids, _p, amounts, _f, _u = _arrays_from_raw(raw)
         insert_market_stats(
             conn,
-            [(parse_id, house_id, METRIC_VOLUME_TOTAL, volume_total(amounts))],
+            [
+                (
+                    parse_id,
+                    house_id,
+                    METRIC_VOLUME_TOTAL,
+                    volume_total(item_ids, amounts),
+                )
+            ],
         )
         return 1
 
@@ -227,10 +242,12 @@ def run_market_value_trans() -> None:
         # Multi-dump gaps leave ah_trans empty on purpose — do not write zeros.
         if not _delta_prev_ok(conn, parse_id):
             return 0
-        t_items, t_prices, t_amounts, t_flags, _lots = _arrays_from_trans(
+        t_items, t_prices, t_amounts, t_flags, t_lots = _arrays_from_trans(
             load_trans_for_parse(conn, house_id, parse_id)
         )
-        value = market_value_trans(t_prices, t_amounts, t_flags, t_items)
+        value = market_value_trans(
+            t_prices, t_amounts, t_flags, t_items, t_lots
+        )
         rows: list[tuple[int, int, str, float | int]] = []
         if need_trans:
             rows.append((parse_id, house_id, METRIC_TRANS, value))
@@ -248,7 +265,7 @@ def run_turnover_volume() -> None:
             return 0
         if not _delta_prev_ok(conn, parse_id):
             return 0
-        _i, _p, t_amounts, _f, _lots = _arrays_from_trans(
+        t_items, _p, t_amounts, _f, t_lots = _arrays_from_trans(
             load_trans_for_parse(conn, house_id, parse_id)
         )
         insert_market_stats(
@@ -258,7 +275,7 @@ def run_turnover_volume() -> None:
                     parse_id,
                     house_id,
                     METRIC_TURNOVER_VOLUME,
-                    turnover_volume(t_amounts),
+                    turnover_volume(t_items, t_amounts, t_lots),
                 )
             ],
         )
@@ -273,7 +290,7 @@ def run_sold_unique_items() -> None:
             return 0
         if not _delta_prev_ok(conn, parse_id):
             return 0
-        t_items, _p, _a, _f, _lots = _arrays_from_trans(
+        t_items, _p, _a, _f, t_lots = _arrays_from_trans(
             load_trans_for_parse(conn, house_id, parse_id)
         )
         insert_market_stats(
@@ -283,7 +300,7 @@ def run_sold_unique_items() -> None:
                     parse_id,
                     house_id,
                     METRIC_SOLD_UNIQUE_ITEMS,
-                    sold_unique_items(t_items),
+                    sold_unique_items(t_items, t_lots),
                 )
             ],
         )

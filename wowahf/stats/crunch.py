@@ -12,6 +12,8 @@ PRICE_JUMP_RATIO = 1.10  # >10% gap between neighbour price levels
 DEPTH_PRICE_FACTOR = 1.05  # depth = volume at <= market_price * this
 INFLATION_VOLUME_MIN = 3000
 INFLATION_CHANGE_JUMP = 10.0  # percentage-points gap when culling % changes
+# Ignore thin books: troll one-offs and illiquid junk dominate otherwise.
+MIN_ITEM_LISTINGS = 10
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,48 @@ class ItemMarketFeatures:
     depth: int  # units at <= market_price * DEPTH_PRICE_FACTOR
     spread_pct: float  # (high-low)/market_price * 100 within main cluster
     volume: int
+
+
+def _item_segment_bounds(item_ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Starts/ends for contiguous runs of equal item_id (must be sorted)."""
+    if len(item_ids) == 0:
+        empty = np.array([], dtype=np.int64)
+        return empty, empty
+    if len(item_ids) > 1:
+        cuts = np.flatnonzero(item_ids[1:] != item_ids[:-1]) + 1
+    else:
+        cuts = np.array([], dtype=np.int64)
+    starts = np.concatenate((np.array([0], dtype=np.int64), cuts))
+    ends = np.concatenate((cuts, np.array([len(item_ids)], dtype=np.int64)))
+    return starts, ends
+
+
+def filter_min_item_listings(
+    item_ids: np.ndarray,
+    *arrays: np.ndarray,
+    min_listings: int = MIN_ITEM_LISTINGS,
+    weights: np.ndarray | None = None,
+) -> tuple[np.ndarray, ...]:
+    """
+    Drop rows for items below ``min_listings``.
+
+    With ``weights`` None, listing count is the row count per item (AH snapshot).
+    With ``weights`` set (e.g. sold ``lots``), listing count is the weight sum.
+    """
+    if len(item_ids) == 0:
+        return (item_ids, *arrays)
+    order = np.argsort(item_ids)
+    item_ids = item_ids[order]
+    arrays = tuple(a[order] for a in arrays)
+    w = weights[order] if weights is not None else None
+
+    starts, ends = _item_segment_bounds(item_ids)
+    keep = np.zeros(len(item_ids), dtype=bool)
+    for s, e in zip(starts.tolist(), ends.tolist()):
+        n = int(w[s:e].sum()) if w is not None else (e - s)
+        if n >= min_listings:
+            keep[s:e] = True
+    return (item_ids[keep], *(a[keep] for a in arrays))
 
 
 def _price_levels(
@@ -70,25 +114,25 @@ def market_value_total(
     is_commodity: np.ndarray,
     item_ids: np.ndarray,
     unit_prices: np.ndarray,
+    *,
+    min_listings: int = MIN_ITEM_LISTINGS,
+    listing_weights: np.ndarray | None = None,
 ) -> int:
-    """Buy-out cost excluding per-item top outlier clusters."""
+    """Buy-out cost excluding thin items and per-item top outlier clusters."""
+    item_ids, prices, amounts, is_commodity, unit_prices = filter_min_item_listings(
+        item_ids,
+        prices,
+        amounts,
+        is_commodity,
+        unit_prices,
+        min_listings=min_listings,
+        weights=listing_weights,
+    )
     if len(prices) == 0:
         return 0
 
     total = 0
-    order = np.argsort(item_ids)
-    item_ids = item_ids[order]
-    prices = prices[order]
-    amounts = amounts[order]
-    is_commodity = is_commodity[order]
-    unit_prices = unit_prices[order]
-
-    if len(item_ids) > 1:
-        cuts = np.flatnonzero(item_ids[1:] != item_ids[:-1]) + 1
-    else:
-        cuts = np.array([], dtype=np.int64)
-    starts = np.concatenate((np.array([0], dtype=np.int64), cuts))
-    ends = np.concatenate((cuts, np.array([len(item_ids)], dtype=np.int64)))
+    starts, ends = _item_segment_bounds(item_ids)
 
     for start, end in zip(starts.tolist(), ends.tolist()):
         lvl_p, lvl_v = _price_levels(unit_prices[start:end], amounts[start:end])
@@ -109,10 +153,12 @@ def market_value_trans(
     amounts: np.ndarray,
     is_commodity: np.ndarray,
     item_ids: np.ndarray,
+    lots: np.ndarray,
 ) -> int:
     """
     Inferred sales value with the same per-item outlier-cluster cull as
     market_value_total (junk commodity unit prices must not dominate turnover).
+    Only items with >= MIN_ITEM_LISTINGS sold lots are included.
     """
     if len(prices) == 0:
         return 0
@@ -121,7 +167,14 @@ def market_value_trans(
         units[i] = unit_price(
             int(prices[i]), int(amounts[i]), bool(is_commodity[i])
         )
-    return market_value_total(prices, amounts, is_commodity, item_ids, units)
+    return market_value_total(
+        prices,
+        amounts,
+        is_commodity,
+        item_ids,
+        units,
+        listing_weights=lots,
+    )
 
 
 @dataclass(frozen=True)
@@ -156,12 +209,24 @@ def item_transaction_stats(
     amounts: np.ndarray,
     is_commodity: np.ndarray,
     lots: np.ndarray,
+    *,
+    min_listings: int = MIN_ITEM_LISTINGS,
 ) -> dict[int, ItemTransactionStats]:
     """
     Per-item low/high/median + sold-listing count from inferred sales,
     keeping only lots in the main volume cluster (same cull as
-    market_value_total). All-outlier items produce no row.
+    market_value_total). Items with fewer than min_listings sold lots
+    and all-outlier items produce no row.
     """
+    item_ids, prices, amounts, is_commodity, lots = filter_min_item_listings(
+        item_ids,
+        prices,
+        amounts,
+        is_commodity,
+        lots,
+        min_listings=min_listings,
+        weights=lots,
+    )
     if len(item_ids) == 0:
         return {}
 
@@ -171,18 +236,7 @@ def item_transaction_stats(
             int(prices[i]), int(amounts[i]), bool(is_commodity[i])
         )
 
-    order = np.argsort(item_ids)
-    item_ids = item_ids[order]
-    amounts = amounts[order]
-    lots = lots[order]
-    units_arr = units_arr[order]
-
-    if len(item_ids) > 1:
-        cuts = np.flatnonzero(item_ids[1:] != item_ids[:-1]) + 1
-    else:
-        cuts = np.array([], dtype=np.int64)
-    starts = np.concatenate((np.array([0], dtype=np.int64), cuts))
-    ends = np.concatenate((cuts, np.array([len(item_ids)], dtype=np.int64)))
+    starts, ends = _item_segment_bounds(item_ids)
 
     out: dict[int, ItemTransactionStats] = {}
     for start, end in zip(starts.tolist(), ends.tolist()):
@@ -215,16 +269,31 @@ def item_transaction_stats(
     return out
 
 
-def listing_count(n_rows: int) -> int:
-    return int(n_rows)
+def listing_count_filtered(
+    item_ids: np.ndarray, *, min_listings: int = MIN_ITEM_LISTINGS
+) -> int:
+    """Count AH rows belonging to items with >= min_listings rows."""
+    kept, = filter_min_item_listings(item_ids, min_listings=min_listings)
+    return int(len(kept))
 
 
-def volume_total(amounts: np.ndarray) -> int:
+def volume_total(
+    item_ids: np.ndarray,
+    amounts: np.ndarray,
+    *,
+    min_listings: int = MIN_ITEM_LISTINGS,
+) -> int:
+    item_ids, amounts = filter_min_item_listings(
+        item_ids, amounts, min_listings=min_listings
+    )
     return int(amounts.sum()) if len(amounts) else 0
 
 
-def unique_items(item_ids: np.ndarray) -> int:
-    return int(np.unique(item_ids).size) if len(item_ids) else 0
+def unique_items(
+    item_ids: np.ndarray, *, min_listings: int = MIN_ITEM_LISTINGS
+) -> int:
+    kept, = filter_min_item_listings(item_ids, min_listings=min_listings)
+    return int(np.unique(kept).size) if len(kept) else 0
 
 
 def item_market_features(
@@ -232,8 +301,17 @@ def item_market_features(
     prices: np.ndarray,
     amounts: np.ndarray,
     is_commodity: np.ndarray,
+    *,
+    min_listings: int = MIN_ITEM_LISTINGS,
 ) -> dict[int, ItemMarketFeatures]:
-    """Per-item market_price, depth, spread_pct, volume."""
+    """Per-item market_price, depth, spread_pct, volume (liquid items only)."""
+    item_ids, prices, amounts, is_commodity = filter_min_item_listings(
+        item_ids,
+        prices,
+        amounts,
+        is_commodity,
+        min_listings=min_listings,
+    )
     if len(item_ids) == 0:
         return {}
 
@@ -243,19 +321,9 @@ def item_market_features(
             int(prices[i]), int(amounts[i]), bool(is_commodity[i])
         )
 
-    order = np.argsort(item_ids)
-    item_ids = item_ids[order]
-    unit_prices = unit_prices[order]
-    amounts = amounts[order]
+    starts, ends = _item_segment_bounds(item_ids)
 
     out: dict[int, ItemMarketFeatures] = {}
-    if len(item_ids) > 1:
-        cuts = np.flatnonzero(item_ids[1:] != item_ids[:-1]) + 1
-    else:
-        cuts = np.array([], dtype=np.int64)
-    starts = np.concatenate((np.array([0], dtype=np.int64), cuts))
-    ends = np.concatenate((cuts, np.array([len(item_ids)], dtype=np.int64)))
-
     for start, end in zip(starts.tolist(), ends.tolist()):
         up = unit_prices[start:end]
         vol = amounts[start:end]
@@ -298,19 +366,27 @@ def item_volumes(
     order = np.argsort(item_ids)
     item_ids = item_ids[order]
     amounts = amounts[order]
-    if len(item_ids) > 1:
-        cuts = np.flatnonzero(item_ids[1:] != item_ids[:-1]) + 1
-    else:
-        cuts = np.array([], dtype=np.int64)
-    starts = np.concatenate((np.array([0], dtype=np.int64), cuts))
-    ends = np.concatenate((cuts, np.array([len(item_ids)], dtype=np.int64)))
+    starts, ends = _item_segment_bounds(item_ids)
     return {
         int(item_ids[s]): int(amounts[s:e].sum())
         for s, e in zip(starts.tolist(), ends.tolist())
     }
 
 
-def turnover_volume(amounts: np.ndarray) -> int:
+def turnover_volume(
+    item_ids: np.ndarray,
+    amounts: np.ndarray,
+    lots: np.ndarray,
+    *,
+    min_listings: int = MIN_ITEM_LISTINGS,
+) -> int:
+    item_ids, amounts, lots = filter_min_item_listings(
+        item_ids,
+        amounts,
+        lots,
+        min_listings=min_listings,
+        weights=lots,
+    )
     return int(amounts.sum()) if len(amounts) else 0
 
 
@@ -320,8 +396,16 @@ def turnover_rate(trans_value: int, market_total: int) -> float | None:
     return float(np.round(trans_value * 100.0 / market_total, 2))
 
 
-def sold_unique_items(item_ids: np.ndarray) -> int:
-    return int(np.unique(item_ids).size) if len(item_ids) else 0
+def sold_unique_items(
+    item_ids: np.ndarray,
+    lots: np.ndarray,
+    *,
+    min_listings: int = MIN_ITEM_LISTINGS,
+) -> int:
+    kept, _lots = filter_min_item_listings(
+        item_ids, lots, min_listings=min_listings, weights=lots
+    )
+    return int(np.unique(kept).size) if len(kept) else 0
 
 
 def _cull_jump_outliers_with_weights(
