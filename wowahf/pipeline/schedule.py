@@ -41,15 +41,17 @@ def delta_metrics_ok(
     """
     Allow sale inference / turnover / inflation for this step.
 
-    A large LM jump alone is fine (Blizzard delayed the next dump while we
-    only saw unchanged skips). Block only when a parse job actually failed
-    in between — that is when we may have missed a published dump.
+    Prev→current LM must be within one hourly dump (+slack). A larger jump
+    (missed dumps, downtime, or Blizzard stall) would treat many hours of
+    disappearances as a single interval and inflate turnover.
+    parse_failed_in_gap is kept for callers/logging; a failure in the gap
+    also blocks even if LM somehow looks fine.
     """
     if prev_at is None:
         return False
-    if lm_gap_ok(prev_at, current_at):
-        return True
-    return not parse_failed_in_gap
+    if parse_failed_in_gap:
+        return False
+    return lm_gap_ok(prev_at, current_at)
 
 
 def parse_due_at() -> datetime:
