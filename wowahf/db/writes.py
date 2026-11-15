@@ -789,6 +789,38 @@ def market_price_exists(conn: Connection, parse_id: int, ah_id: int) -> bool:
         return cur.fetchone() is not None
 
 
+def load_market_prices(
+    conn: Connection, house_id: int, parse_id: int
+) -> dict[int, int]:
+    """item_id → market_price copper for one parse/house."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT item_id, price
+            FROM market_price
+            WHERE parse_id = %s AND ah_id = %s
+            """,
+            (parse_id, house_id),
+        )
+        return {int(r[0]): int(r[1]) for r in cur.fetchall()}
+
+
+def load_market_depths(
+    conn: Connection, house_id: int, parse_id: int
+) -> dict[int, int]:
+    """item_id → near-ask depth units for one parse/house."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT item_id, depth
+            FROM market_depth
+            WHERE parse_id = %s AND ah_id = %s
+            """,
+            (parse_id, house_id),
+        )
+        return {int(r[0]): int(r[1]) for r in cur.fetchall()}
+
+
 def _insert_market_with_parsed_at(
     conn: Connection,
     sql: str,

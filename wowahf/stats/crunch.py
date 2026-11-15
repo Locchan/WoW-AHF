@@ -10,9 +10,9 @@ from wowahf.pipeline.normalize import listing_value, unit_price
 
 PRICE_JUMP_RATIO = 1.10  # >10% gap between neighbour price levels
 DEPTH_PRICE_FACTOR = 1.05  # depth = volume at <= market_price * this
-# After MIN_ITEM_LISTINGS, small/regional AHs never reach 3000 units.
-INFLATION_VOLUME_MIN = 200
-INFLATION_CHANGE_JUMP = 10.0  # percentage-points gap when culling % changes
+# Near-market depth floor for the inflation basket (units at ask±5%).
+INFLATION_DEPTH_MIN = 500
+INFLATION_CHANGE_JUMP = 10.0  # percentage-points gap when culling high % changes
 # Ignore thin books: troll one-offs and illiquid junk dominate otherwise.
 MIN_ITEM_LISTINGS = 10
 
@@ -405,13 +405,16 @@ def sold_unique_items(
     return int(np.unique(kept).size) if len(kept) else 0
 
 
-def _cull_jump_outliers_with_weights(
+def _cull_high_jump_outliers_with_weights(
     values: np.ndarray, weights: np.ndarray, jump: float
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Keep the densest cluster of sorted values (gap > jump splits clusters)."""
-    if len(values) == 0:
-        return values, weights
-    if len(values) == 1:
+    """
+    Drop only high-side outlier clusters (gap > jump).
+
+    Clusters are split on sorted values. The weight-heaviest cluster is the
+    anchor; everything at or below its upper edge is kept, high tails go.
+    """
+    if len(values) <= 1:
         return values, weights
     order = np.argsort(values)
     sorted_v = values[order]
@@ -422,41 +425,46 @@ def _cull_jump_outliers_with_weights(
             bounds.append(i + 1)
     bounds.append(len(sorted_v))
     clusters = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
-    best = max(clusters, key=lambda se: se[1] - se[0])
-    return sorted_v[best[0] : best[1]], sorted_w[best[0] : best[1]]
+    best_i = max(
+        range(len(clusters)),
+        key=lambda i: float(sorted_w[clusters[i][0] : clusters[i][1]].sum()),
+    )
+    end = clusters[best_i][1]
+    return sorted_v[:end], sorted_w[:end]
 
 
 def inflation_rate(
     current_prices: dict[int, int],
     previous_prices: dict[int, int],
-    current_volumes: dict[int, int],
-    volume_min: int = INFLATION_VOLUME_MIN,
+    current_depths: dict[int, int],
+    depth_min: int = INFLATION_DEPTH_MIN,
 ) -> float | None:
     """
-    Volume-weighted mean % price change for items with volume >= volume_min.
+    Depth-weighted mean % market_price change for liquid items.
 
-    Median of per-item % changes is useless here: market_price is the cluster
-    floor, so most liquid items sit at 0% hour-to-hour and the median sticks
-    at 0. Weighting by volume after the jump cull tracks the basket instead.
+    Basket: items with near-ask depth >= depth_min in the current snapshot.
+    Weights use current depth (units at <= market_price * DEPTH_PRICE_FACTOR),
+    not total listed stock. High-only jump cull removes spike tails without
+    discarding genuine deflation.
     """
     changes: list[float] = []
     weights: list[float] = []
-    for item_id, vol in current_volumes.items():
-        if vol < volume_min:
+    for item_id, depth in current_depths.items():
+        if depth < depth_min:
             continue
         cur = current_prices.get(item_id)
         prev = previous_prices.get(item_id)
         if cur is None or prev is None or prev <= 0:
             continue
         changes.append((cur - prev) * 100.0 / prev)
-        weights.append(float(vol))
+        weights.append(float(depth))
 
     if not changes:
         return None
 
     arr = np.asarray(changes, dtype=np.float64)
     w = np.asarray(weights, dtype=np.float64)
-    culled, culled_w = _cull_jump_outliers_with_weights(
+    culled, culled_w = _cull_high_jump_outliers_with_weights(
         arr, w, INFLATION_CHANGE_JUMP
     )
     if len(culled) == 0 or culled_w.sum() <= 0:

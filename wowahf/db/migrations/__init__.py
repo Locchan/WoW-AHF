@@ -28,6 +28,7 @@ from wowahf.db.migrations import (
     m025_item_tx_no_min_lots,
     m026_recalc_item_tx,
     m027_recalc_item_tx_from_trans,
+    m028_recalc_inflation,
 )
 
 ALL = [
@@ -58,4 +59,5 @@ ALL = [
     m025_item_tx_no_min_lots,
     m026_recalc_item_tx,
     m027_recalc_item_tx_from_trans,
+    m028_recalc_inflation,
 ]

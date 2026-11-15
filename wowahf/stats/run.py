@@ -13,6 +13,8 @@ from wowahf.db.writes import (
     insert_item_transaction_stats,
     list_house_ids,
     list_parse_ids,
+    load_market_depths,
+    load_market_prices,
     load_raw_for_parse,
     load_trans_for_parse,
     market_depth_exists,
@@ -372,6 +374,31 @@ def run_market_spread() -> None:
     _run_named("stats_market_spread", work)
 
 
+def _inflation_inputs(
+    conn: Connection, house_id: int, parse_id: int
+) -> tuple[dict[int, int], dict[int, int]]:
+    """
+    Prices + near-ask depths for inflation.
+
+    Prefer persisted market_price / market_depth so history beyond the raw
+    retention window can be rebuilt. Fall back to raw features when tables
+    are empty for this parse.
+    """
+    prices = load_market_prices(conn, house_id, parse_id)
+    depths = load_market_depths(conn, house_id, parse_id)
+    if prices and depths:
+        return prices, depths
+    raw = load_raw_for_parse(conn, house_id, parse_id)
+    if not raw:
+        return {}, {}
+    item_ids, p, amounts, flags, _u = _arrays_from_raw(raw)
+    feats = item_market_features(item_ids, p, amounts, flags)
+    return (
+        {i: f.market_price for i, f in feats.items()},
+        {i: f.depth for i, f in feats.items()},
+    )
+
+
 def run_inflation_rate() -> None:
     def work(conn: Connection, house_id: int, parse_id: int) -> int:
         if metric_exists(conn, parse_id, house_id, METRIC_INFLATION):
@@ -389,17 +416,11 @@ def run_inflation_rate() -> None:
                 conn, [(parse_id, house_id, METRIC_INFLATION, 0.0)]
             )
             return 1
-        raw = load_raw_for_parse(conn, house_id, parse_id)
-        item_ids, prices, amounts, flags, _u = _arrays_from_raw(raw)
-        feats = item_market_features(item_ids, prices, amounts, flags)
-        prev_raw = load_raw_for_parse(conn, house_id, prev_id)
-        p_items, p_prices, p_amounts, p_flags, _pu = _arrays_from_raw(prev_raw)
-        prev_feats = item_market_features(p_items, p_prices, p_amounts, p_flags)
-        rate = inflation_rate(
-            {i: f.market_price for i, f in feats.items()},
-            {i: f.market_price for i, f in prev_feats.items()},
-            {i: f.volume for i, f in feats.items()},
-        )
+        cur_prices, cur_depths = _inflation_inputs(conn, house_id, parse_id)
+        prev_prices, _prev_depths = _inflation_inputs(conn, house_id, prev_id)
+        if not cur_prices or not prev_prices:
+            return 0
+        rate = inflation_rate(cur_prices, prev_prices, cur_depths)
         # No liquid basket → 0 so series stay continuous in Grafana.
         if rate is None:
             rate = 0.0
