@@ -25,6 +25,7 @@ from wowahf.db.migrations import (
     m022_min_listings_recalc,
     m023_drop_orphan_mv_spikes,
     m024_fill_metric_gaps,
+    m025_item_tx_no_min_lots,
 )
 
 ALL = [
@@ -52,4 +53,5 @@ ALL = [
     m022_min_listings_recalc,
     m023_drop_orphan_mv_spikes,
     m024_fill_metric_gaps,
+    m025_item_tx_no_min_lots,
 ]

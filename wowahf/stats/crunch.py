@@ -210,26 +210,22 @@ def item_transaction_stats(
     amounts: np.ndarray,
     is_commodity: np.ndarray,
     lots: np.ndarray,
-    *,
-    min_listings: int = MIN_ITEM_LISTINGS,
 ) -> dict[int, ItemTransactionStats]:
     """
     Per-item low/high/median + sold-listing count from inferred sales,
     keeping only lots in the main volume cluster (same cull as
-    market_value_total). Items with fewer than min_listings sold lots
-    and all-outlier items produce no row.
+    market_value_total). Any sold volume is kept — the MIN_ITEM_LISTINGS
+    floor applies to market-cap aggregates, not per-item tx charts.
     """
-    item_ids, prices, amounts, is_commodity, lots = filter_min_item_listings(
-        item_ids,
-        prices,
-        amounts,
-        is_commodity,
-        lots,
-        min_listings=min_listings,
-        weights=lots,
-    )
     if len(item_ids) == 0:
         return {}
+
+    order = np.argsort(item_ids)
+    item_ids = item_ids[order]
+    prices = prices[order]
+    amounts = amounts[order]
+    is_commodity = is_commodity[order]
+    lots = lots[order]
 
     units_arr = np.empty(len(item_ids), dtype=np.int64)
     for i in range(len(item_ids)):
