@@ -27,6 +27,7 @@ from wowahf.db.migrations import (
     m024_fill_metric_gaps,
     m025_item_tx_no_min_lots,
     m026_recalc_item_tx,
+    m027_recalc_item_tx_from_trans,
 )
 
 ALL = [
@@ -56,4 +57,5 @@ ALL = [
     m024_fill_metric_gaps,
     m025_item_tx_no_min_lots,
     m026_recalc_item_tx,
+    m027_recalc_item_tx_from_trans,
 ]
