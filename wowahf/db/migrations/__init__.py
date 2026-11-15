@@ -24,6 +24,7 @@ from wowahf.db.migrations import (
     m021_purge_gap_deltas_again,
     m022_min_listings_recalc,
     m023_drop_orphan_mv_spikes,
+    m024_fill_metric_gaps,
 )
 
 ALL = [
@@ -50,4 +51,5 @@ ALL = [
     m021_purge_gap_deltas_again,
     m022_min_listings_recalc,
     m023_drop_orphan_mv_spikes,
+    m024_fill_metric_gaps,
 ]

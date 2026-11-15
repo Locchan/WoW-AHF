@@ -239,15 +239,16 @@ def run_market_value_trans() -> None:
         need_tvalue = not metric_exists(conn, parse_id, house_id, METRIC_TURNOVER_VALUE)
         if not need_trans and not need_tvalue:
             return 0
-        # Multi-dump gaps leave ah_trans empty on purpose — do not write zeros.
+        # Multi-dump gaps: write 0 so Grafana stays continuous (not real sales).
         if not _delta_prev_ok(conn, parse_id):
-            return 0
-        t_items, t_prices, t_amounts, t_flags, t_lots = _arrays_from_trans(
-            load_trans_for_parse(conn, house_id, parse_id)
-        )
-        value = market_value_trans(
-            t_prices, t_amounts, t_flags, t_items, t_lots
-        )
+            value = 0
+        else:
+            t_items, t_prices, t_amounts, t_flags, t_lots = _arrays_from_trans(
+                load_trans_for_parse(conn, house_id, parse_id)
+            )
+            value = market_value_trans(
+                t_prices, t_amounts, t_flags, t_items, t_lots
+            )
         rows: list[tuple[int, int, str, float | int]] = []
         if need_trans:
             rows.append((parse_id, house_id, METRIC_TRANS, value))
@@ -264,20 +265,15 @@ def run_turnover_volume() -> None:
         if metric_exists(conn, parse_id, house_id, METRIC_TURNOVER_VOLUME):
             return 0
         if not _delta_prev_ok(conn, parse_id):
-            return 0
-        t_items, _p, t_amounts, _f, t_lots = _arrays_from_trans(
-            load_trans_for_parse(conn, house_id, parse_id)
-        )
+            value = 0
+        else:
+            t_items, _p, t_amounts, _f, t_lots = _arrays_from_trans(
+                load_trans_for_parse(conn, house_id, parse_id)
+            )
+            value = turnover_volume(t_items, t_amounts, t_lots)
         insert_market_stats(
             conn,
-            [
-                (
-                    parse_id,
-                    house_id,
-                    METRIC_TURNOVER_VOLUME,
-                    turnover_volume(t_items, t_amounts, t_lots),
-                )
-            ],
+            [(parse_id, house_id, METRIC_TURNOVER_VOLUME, value)],
         )
         return 1
 
@@ -289,20 +285,15 @@ def run_sold_unique_items() -> None:
         if metric_exists(conn, parse_id, house_id, METRIC_SOLD_UNIQUE_ITEMS):
             return 0
         if not _delta_prev_ok(conn, parse_id):
-            return 0
-        t_items, _p, _a, _f, t_lots = _arrays_from_trans(
-            load_trans_for_parse(conn, house_id, parse_id)
-        )
+            value = 0
+        else:
+            t_items, _p, _a, _f, t_lots = _arrays_from_trans(
+                load_trans_for_parse(conn, house_id, parse_id)
+            )
+            value = sold_unique_items(t_items, t_lots)
         insert_market_stats(
             conn,
-            [
-                (
-                    parse_id,
-                    house_id,
-                    METRIC_SOLD_UNIQUE_ITEMS,
-                    sold_unique_items(t_items, t_lots),
-                )
-            ],
+            [(parse_id, house_id, METRIC_SOLD_UNIQUE_ITEMS, value)],
         )
         return 1
 
@@ -314,14 +305,15 @@ def run_turnover_rate() -> None:
         if metric_exists(conn, parse_id, house_id, METRIC_TURNOVER_RATE):
             return 0
         if not _delta_prev_ok(conn, parse_id):
-            return 0
-        total = _metric_value(conn, parse_id, house_id, METRIC_TOTAL)
-        trans = _metric_value(conn, parse_id, house_id, METRIC_TRANS)
-        if total is None or trans is None:
-            return 0
-        rate = turnover_rate(int(trans), int(total))
-        if rate is None:
-            return 0
+            rate = 0.0
+        else:
+            total = _metric_value(conn, parse_id, house_id, METRIC_TOTAL)
+            trans = _metric_value(conn, parse_id, house_id, METRIC_TRANS)
+            if total is None or trans is None:
+                return 0
+            rate = turnover_rate(int(trans), int(total))
+            if rate is None:
+                rate = 0.0
         insert_market_stats(
             conn, [(parse_id, house_id, METRIC_TURNOVER_RATE, rate)]
         )
@@ -393,7 +385,10 @@ def run_inflation_rate() -> None:
         if not delta_metrics_ok(
             prev_lm, current_lm, parse_failed_in_gap=failed
         ):
-            return 0
+            insert_market_stats(
+                conn, [(parse_id, house_id, METRIC_INFLATION, 0.0)]
+            )
+            return 1
         raw = load_raw_for_parse(conn, house_id, parse_id)
         item_ids, prices, amounts, flags, _u = _arrays_from_raw(raw)
         feats = item_market_features(item_ids, prices, amounts, flags)
@@ -405,8 +400,9 @@ def run_inflation_rate() -> None:
             {i: f.market_price for i, f in prev_feats.items()},
             {i: f.volume for i, f in feats.items()},
         )
+        # No liquid basket → 0 so series stay continuous in Grafana.
         if rate is None:
-            return 0
+            rate = 0.0
         insert_market_stats(
             conn, [(parse_id, house_id, METRIC_INFLATION, rate)]
         )

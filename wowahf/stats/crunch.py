@@ -10,7 +10,8 @@ from wowahf.pipeline.normalize import listing_value, unit_price
 
 PRICE_JUMP_RATIO = 1.10  # >10% gap between neighbour price levels
 DEPTH_PRICE_FACTOR = 1.05  # depth = volume at <= market_price * this
-INFLATION_VOLUME_MIN = 3000
+# After MIN_ITEM_LISTINGS, small/regional AHs never reach 3000 units.
+INFLATION_VOLUME_MIN = 200
 INFLATION_CHANGE_JUMP = 10.0  # percentage-points gap when culling % changes
 # Ignore thin books: troll one-offs and illiquid junk dominate otherwise.
 MIN_ITEM_LISTINGS = 10
