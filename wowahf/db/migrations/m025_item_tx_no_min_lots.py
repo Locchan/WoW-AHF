@@ -5,19 +5,21 @@ def upgrade(conn) -> None:
     """
     Drop item_transaction_stats for parses that still have ah_raw so stats
     can refill without the MIN_ITEM_LISTINGS floor (per-item tx charts).
+
+    Deletes one parse_id at a time — Timescale rejects huge decompressing
+    DELETEs under max_tuples_decompressed_per_dml_transaction.
     """
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT DISTINCT substring(tablename from 'ah_raw_([0-9]+)$')::int,
-                   tablename
+            SELECT tablename
             FROM pg_tables
             WHERE schemaname = 'data_raw'
               AND tablename ~ '^ah_raw_[0-9]+$'
             ORDER BY 1
             """
         )
-        raw_tables = [r[1] for r in cur.fetchall()]
+        raw_tables = [r[0] for r in cur.fetchall()]
         if not raw_tables:
             return
 
@@ -28,7 +30,12 @@ def upgrade(conn) -> None:
         if not parse_ids:
             return
 
+        # Allow large hypertable DML for this migration only.
         cur.execute(
-            "DELETE FROM public.item_transaction_stats WHERE parse_id = ANY(%s)",
-            (sorted(parse_ids),),
+            "SET LOCAL timescaledb.max_tuples_decompressed_per_dml_transaction = 0"
         )
+        for parse_id in sorted(parse_ids):
+            cur.execute(
+                "DELETE FROM public.item_transaction_stats WHERE parse_id = %s",
+                (parse_id,),
+            )
