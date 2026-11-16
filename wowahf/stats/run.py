@@ -10,13 +10,17 @@ from wowahf.db.writes import (
     insert_market_prices,
     insert_market_spreads,
     insert_market_stats,
+    insert_item_median_deltas,
     insert_item_transaction_stats,
+    item_median_delta_exists,
     list_house_ids,
     list_parse_ids,
+    load_item_tx_medians,
     load_market_depths,
     load_market_prices,
     load_raw_for_parse,
     load_trans_for_parse,
+    load_tx_weighted_avg_medians,
     market_depth_exists,
     market_price_exists,
     market_spread_exists,
@@ -35,6 +39,7 @@ from wowahf.stats.crunch import (
     listing_count_filtered,
     market_value_total,
     market_value_trans,
+    median_delta_pct,
     sold_unique_items,
     turnover_rate,
     turnover_volume,
@@ -463,6 +468,36 @@ def run_item_transaction_stats() -> None:
     _run_named("stats_item_transaction", work)
 
 
+def run_item_median_delta() -> None:
+    """Backfill pct vs tx-weighted 5d median for every parse/house."""
+
+    def work(conn: Connection, house_id: int, parse_id: int) -> int:
+        if item_median_delta_exists(conn, parse_id, house_id):
+            return 0
+        current = load_item_tx_medians(conn, house_id, parse_id)
+        if not current:
+            return 0
+        parsed_at = parsed_at_for(conn, parse_id)
+        avg5d = load_tx_weighted_avg_medians(
+            conn, house_id, list(current.keys()), parsed_at
+        )
+        rows: list[tuple[int, int, int, float]] = []
+        for item_id, median in current.items():
+            base = avg5d.get(item_id)
+            if base is None:
+                continue
+            pct = median_delta_pct(median, base)
+            if pct is None:
+                continue
+            rows.append((parse_id, house_id, item_id, pct))
+        if not rows:
+            return 0
+        insert_item_median_deltas(conn, rows)
+        return len(rows)
+
+    _run_named("stats_item_median_delta", work)
+
+
 # Ordered chain after parse / on startup.
 STATS_JOBS: list[tuple[str, object]] = [
     ("stats_market_value_total", run_market_value_total),
@@ -479,4 +514,5 @@ STATS_JOBS: list[tuple[str, object]] = [
     ("stats_market_spread", run_market_spread),
     ("stats_inflation_rate", run_inflation_rate),
     ("stats_item_transaction", run_item_transaction_stats),
+    ("stats_item_median_delta", run_item_median_delta),
 ]

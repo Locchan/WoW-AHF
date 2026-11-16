@@ -29,6 +29,7 @@ from wowahf.db.migrations import (
     m026_recalc_item_tx,
     m027_recalc_item_tx_from_trans,
     m028_recalc_inflation,
+    m029_item_median_delta,
 )
 
 ALL = [
@@ -60,4 +61,5 @@ ALL = [
     m026_recalc_item_tx,
     m027_recalc_item_tx_from_trans,
     m028_recalc_inflation,
+    m029_item_median_delta,
 ]

@@ -290,6 +290,7 @@ def _delete_parse_keyed_rows(conn: Connection, parse_id: int) -> None:
             "market_depth",
             "market_spread",
             "item_transaction_stats",
+            "item_median_delta",
         ):
             cur.execute(
                 f"DELETE FROM public.{table} WHERE parse_id = %s",
@@ -773,6 +774,13 @@ def delete_delta_metrics(
             """,
             (parse_id, ah_id),
         )
+        cur.execute(
+            """
+            DELETE FROM public.item_median_delta
+            WHERE parse_id = %s AND ah_id = %s
+            """,
+            (parse_id, ah_id),
+        )
     conn.commit()
 
 
@@ -960,6 +968,101 @@ def insert_item_transaction_stats(
         "ON CONFLICT (ah_id, item_id, parse_id, parsed_at) DO UPDATE SET "
         "low = EXCLUDED.low, high = EXCLUDED.high, "
         "median = EXCLUDED.median, tx_count = EXCLUDED.tx_count"
+    )
+    with conn.cursor() as cur:
+        for parse_id, group in by_parse.items():
+            parsed_at = _parsed_at_for(conn, parse_id)
+            payload = [(*row, parsed_at) for row in group]
+            for batch in _batched(payload):
+                cur.executemany(sql, batch)
+    conn.commit()
+
+
+def item_median_delta_exists(
+    conn: Connection, parse_id: int, ah_id: int
+) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM item_median_delta
+            WHERE parse_id = %s AND ah_id = %s
+            LIMIT 1
+            """,
+            (parse_id, ah_id),
+        )
+        return cur.fetchone() is not None
+
+
+def load_item_tx_medians(
+    conn: Connection, house_id: int, parse_id: int
+) -> dict[int, int]:
+    """item_id → median copper for one parse/house."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT item_id, median
+            FROM item_transaction_stats
+            WHERE parse_id = %s AND ah_id = %s
+            """,
+            (parse_id, house_id),
+        )
+        return {int(r[0]): int(r[1]) for r in cur.fetchall()}
+
+
+def load_tx_weighted_avg_medians(
+    conn: Connection,
+    house_id: int,
+    item_ids: Sequence[int],
+    parsed_at: datetime,
+    *,
+    lookback_days: int = 5,
+) -> dict[int, float]:
+    """
+    item_id → tx_count-weighted mean of hourly medians in
+    [parsed_at - lookback_days, parsed_at).
+    """
+    if not item_ids:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                item_id,
+                SUM(median * tx_count)::float8
+                    / NULLIF(SUM(tx_count), 0) AS avg_median
+            FROM item_transaction_stats
+            WHERE ah_id = %s
+              AND item_id = ANY(%s)
+              AND parsed_at >= %s - make_interval(days => %s)
+              AND parsed_at < %s
+            GROUP BY item_id
+            """,
+            (house_id, list(item_ids), parsed_at, lookback_days, parsed_at),
+        )
+        out: dict[int, float] = {}
+        for item_id, avg_median in cur.fetchall():
+            if avg_median is None:
+                continue
+            out[int(item_id)] = float(avg_median)
+        return out
+
+
+def insert_item_median_deltas(
+    conn: Connection,
+    rows: Sequence[tuple[int, int, int, float]],
+) -> None:
+    """rows: (parse_id, ah_id, item_id, pct)"""
+    if not rows:
+        return
+    by_parse: dict[int, list[tuple]] = {}
+    for row in rows:
+        by_parse.setdefault(int(row[0]), []).append(row)
+    sql = (
+        "INSERT INTO item_median_delta "
+        "(parse_id, ah_id, item_id, pct, parsed_at) "
+        "VALUES (%s, %s, %s, %s, %s) "
+        "ON CONFLICT (ah_id, item_id, parse_id, parsed_at) DO UPDATE SET "
+        "pct = EXCLUDED.pct"
     )
     with conn.cursor() as cur:
         for parse_id, group in by_parse.items():

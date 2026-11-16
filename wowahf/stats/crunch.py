@@ -470,3 +470,10 @@ def inflation_rate(
     if len(culled) == 0 or culled_w.sum() <= 0:
         return None
     return float(np.round(float((culled * culled_w).sum() / culled_w.sum()), 2))
+
+
+def median_delta_pct(current_median: int, avg5d: float) -> float | None:
+    """Signed % of current median vs tx-weighted 5-day average median."""
+    if avg5d <= 0:
+        return None
+    return float(np.round((current_median - avg5d) * 100.0 / avg5d, 2))
