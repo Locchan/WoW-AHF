@@ -49,7 +49,7 @@ def upgrade(conn) -> None:
                 "market_depth",
                 "market_spread",
                 "item_transaction_stats",
-                "item_market_activity",
+                "commodity_market_activity",
             ):
                 cur.execute(
                     f"DELETE FROM public.{table} WHERE parse_id = %s",

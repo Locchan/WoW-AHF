@@ -5,7 +5,7 @@ from psycopg import Connection
 
 from wowahf.db.connection import connect
 from wowahf.db.writes import (
-    backfill_item_market_activity_house,
+    backfill_commodity_market_activity_house,
     has_unrecoverable_parse_gap,
     insert_market_depths,
     insert_market_prices,
@@ -464,31 +464,30 @@ def run_item_transaction_stats() -> None:
     _run_named("stats_item_transaction", work)
 
 
-def run_item_market_activity() -> None:
+def run_commodity_market_activity() -> None:
     """
-    Bulk-fill median_pct + hotness_pct per AH (one SQL each).
+    Bulk-fill median_pct + hotness_pct for commodities per AH (one SQL each).
 
     Liquid = AVG(listed units per parse) > 200. Hotness = sold/listed * 100.
     """
-    log("stats_item_market_activity: started")
+    log("stats_commodity_market_activity: started")
     conn = connect()
     try:
         house_ids = list_house_ids(conn)
         written = 0
         for house_id in house_ids:
             if stop_requested():
-                log("stats_item_market_activity: stop requested, aborting")
+                log("stats_commodity_market_activity: stop requested, aborting")
                 break
-            n = backfill_item_market_activity_house(conn, house_id)
+            n = backfill_commodity_market_activity_house(conn, house_id)
             written += n
-            log(f"stats_item_market_activity: house={house_id} rows={n}")
+            log(f"stats_commodity_market_activity: house={house_id} rows={n}")
         log(
-            f"stats_item_market_activity: finished houses={len(house_ids)} "
+            f"stats_commodity_market_activity: finished houses={len(house_ids)} "
             f"rows_written={written}"
         )
     finally:
         conn.close()
-
 
 
 # Ordered chain after parse / on startup.
@@ -507,5 +506,5 @@ STATS_JOBS: list[tuple[str, object]] = [
     ("stats_market_spread", run_market_spread),
     ("stats_inflation_rate", run_inflation_rate),
     ("stats_item_transaction", run_item_transaction_stats),
-    ("stats_item_market_activity", run_item_market_activity),
+    ("stats_commodity_market_activity", run_commodity_market_activity),
 ]

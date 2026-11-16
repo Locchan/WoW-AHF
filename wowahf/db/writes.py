@@ -290,7 +290,7 @@ def _delete_parse_keyed_rows(conn: Connection, parse_id: int) -> None:
             "market_depth",
             "market_spread",
             "item_transaction_stats",
-            "item_market_activity",
+            "commodity_market_activity",
         ):
             cur.execute(
                 f"DELETE FROM public.{table} WHERE parse_id = %s",
@@ -776,7 +776,7 @@ def delete_delta_metrics(
         )
         cur.execute(
             """
-            DELETE FROM public.item_market_activity
+            DELETE FROM public.commodity_market_activity
             WHERE parse_id = %s AND ah_id = %s
             """,
             (parse_id, ah_id),
@@ -983,7 +983,7 @@ MARKET_ACTIVITY_MIN_AVG_LISTED = 200
 MARKET_ACTIVITY_LOOKBACK_DAYS = 5
 
 
-def backfill_item_market_activity_house(
+def backfill_commodity_market_activity_house(
     conn: Connection,
     house_id: int,
     *,
@@ -991,16 +991,16 @@ def backfill_item_market_activity_house(
     lookback_days: int = MARKET_ACTIVITY_LOOKBACK_DAYS,
 ) -> int:
     """
-    Fill missing item_market_activity rows for one AH in a single SQL.
+    Fill missing commodity_market_activity rows for one AH in a single SQL.
 
-    Liquid = AVG(listed units per parse) across that AH's aggr history > min.
+    Commodities only (items.is_commodity). Liquid = AVG(listed per parse) > min.
     median_pct = vs tx-weighted median over the prior ``lookback_days``.
     hotness_pct = sold_units / listed_units * 100 for the parse.
     """
     aggr = aggr_table(house_id)
     trans = trans_table(house_id)
     sql = f"""
-        INSERT INTO item_market_activity
+        INSERT INTO commodity_market_activity
             (parsed_at, parse_id, ah_id, item_id, median_pct, hotness_pct)
         SELECT
             c.parsed_at,
@@ -1010,6 +1010,9 @@ def backfill_item_market_activity_house(
             ROUND(((c.median - a.avg5d) * 100.0 / a.avg5d)::numeric, 2),
             ROUND((COALESCE(s.sold, 0) * 100.0 / l.listed)::numeric, 2)
         FROM item_transaction_stats c
+        INNER JOIN items it
+            ON it.id = c.item_id
+           AND it.is_commodity
         INNER JOIN (
             SELECT item_id
             FROM (
@@ -1051,7 +1054,7 @@ def backfill_item_market_activity_house(
         WHERE c.ah_id = %s
           AND NOT EXISTS (
             SELECT 1
-            FROM item_market_activity x
+            FROM commodity_market_activity x
             WHERE x.ah_id = c.ah_id
               AND x.item_id = c.item_id
               AND x.parse_id = c.parse_id
