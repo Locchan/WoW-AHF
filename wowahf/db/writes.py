@@ -978,196 +978,88 @@ def insert_item_transaction_stats(
     conn.commit()
 
 
-# Item-markets need this much average daily listed volume to enter activity.
-MARKET_ACTIVITY_MIN_AVG_DAILY = 200
+# Item-markets need this much average listed volume (per parse) to qualify.
+MARKET_ACTIVITY_MIN_AVG_LISTED = 200
 MARKET_ACTIVITY_LOOKBACK_DAYS = 5
 
 
-def item_market_activity_exists(
-    conn: Connection, parse_id: int, ah_id: int
-) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT 1 FROM item_market_activity
-            WHERE parse_id = %s AND ah_id = %s
-            LIMIT 1
-            """,
-            (parse_id, ah_id),
-        )
-        return cur.fetchone() is not None
-
-
-def load_item_tx_medians(
-    conn: Connection, house_id: int, parse_id: int
-) -> dict[int, int]:
-    """item_id → median copper for one parse/house."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT item_id, median
-            FROM item_transaction_stats
-            WHERE parse_id = %s AND ah_id = %s
-            """,
-            (parse_id, house_id),
-        )
-        return {int(r[0]): int(r[1]) for r in cur.fetchall()}
-
-
-def load_tx_weighted_avg_medians(
+def backfill_item_market_activity_house(
     conn: Connection,
     house_id: int,
-    item_ids: Sequence[int],
-    parsed_at: datetime,
     *,
+    min_avg_listed: int = MARKET_ACTIVITY_MIN_AVG_LISTED,
     lookback_days: int = MARKET_ACTIVITY_LOOKBACK_DAYS,
-) -> dict[int, float]:
+) -> int:
     """
-    item_id → tx_count-weighted mean of hourly medians in
-    [parsed_at - lookback_days, parsed_at).
+    Fill missing item_market_activity rows for one AH in a single SQL.
+
+    Liquid = AVG(listed units per parse) across that AH's aggr history > min.
+    median_pct = vs tx-weighted median over the prior ``lookback_days``.
+    hotness_pct = sold_units / listed_units * 100 for the parse.
     """
-    if not item_ids:
-        return {}
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT
-                item_id,
-                SUM(median * tx_count)::float8
-                    / NULLIF(SUM(tx_count), 0) AS avg_median
-            FROM item_transaction_stats
-            WHERE ah_id = %s
-              AND item_id = ANY(%s)
-              AND parsed_at >= %s - make_interval(days => %s)
-              AND parsed_at < %s
-            GROUP BY item_id
-            """,
-            (house_id, list(item_ids), parsed_at, lookback_days, parsed_at),
-        )
-        out: dict[int, float] = {}
-        for item_id, avg_median in cur.fetchall():
-            if avg_median is None:
-                continue
-            out[int(item_id)] = float(avg_median)
-        return out
-
-
-def load_item_listed_units(
-    conn: Connection, house_id: int, parse_id: int
-) -> dict[int, int]:
-    """item_id → sum(amount) on AH for one parse."""
-    table = aggr_table(house_id)
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT item_id, SUM(amount)::bigint
-            FROM {table}
-            WHERE parse_id = %s
-            GROUP BY item_id
-            """,
-            (parse_id,),
-        )
-        return {int(r[0]): int(r[1]) for r in cur.fetchall()}
-
-
-def load_item_sold_units(
-    conn: Connection, house_id: int, parse_id: int
-) -> dict[int, int]:
-    """item_id → sum(amount) sold for one parse."""
-    table = trans_table(house_id)
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT item_id, SUM(amount)::bigint
-            FROM {table}
-            WHERE parse_id = %s
-            GROUP BY item_id
-            """,
-            (parse_id,),
-        )
-        return {int(r[0]): int(r[1]) for r in cur.fetchall()}
-
-
-def load_liquid_item_ids(
-    conn: Connection,
-    house_id: int,
-    parsed_at: datetime,
-    item_ids: Sequence[int],
-    *,
-    lookback_days: int = MARKET_ACTIVITY_LOOKBACK_DAYS,
-    min_avg_daily: int = MARKET_ACTIVITY_MIN_AVG_DAILY,
-) -> set[int]:
-    """
-    Items whose average daily listed units over the lookback exceeds
-    ``min_avg_daily``. Daily listed = mean of per-parse listed totals that day.
-    """
-    if not item_ids:
-        return set()
-    table = aggr_table(house_id)
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
+    aggr = aggr_table(house_id)
+    trans = trans_table(house_id)
+    sql = f"""
+        INSERT INTO item_market_activity
+            (parsed_at, parse_id, ah_id, item_id, median_pct, hotness_pct)
+        SELECT
+            c.parsed_at,
+            c.parse_id,
+            c.ah_id,
+            c.item_id,
+            ROUND(((c.median - a.avg5d) * 100.0 / a.avg5d)::numeric, 2),
+            ROUND((COALESCE(s.sold, 0) * 100.0 / l.listed)::numeric, 2)
+        FROM item_transaction_stats c
+        INNER JOIN (
             SELECT item_id
             FROM (
-                SELECT
-                    item_id,
-                    AVG(day_listed) AS avg_daily
+                SELECT item_id, AVG(parse_listed) AS avg_listed
                 FROM (
-                    SELECT
-                        item_id,
-                        date_trunc('day', parsed_at) AS day,
-                        AVG(parse_listed) AS day_listed
-                    FROM (
-                        SELECT
-                            item_id,
-                            parse_id,
-                            parsed_at,
-                            SUM(amount)::float8 AS parse_listed
-                        FROM {table}
-                        WHERE item_id = ANY(%s)
-                          AND parsed_at >= %s - make_interval(days => %s)
-                          AND parsed_at < %s
-                        GROUP BY item_id, parse_id, parsed_at
-                    ) per_parse
-                    GROUP BY item_id, day
-                ) per_day
+                    SELECT item_id, parse_id, SUM(amount)::float8 AS parse_listed
+                    FROM {aggr}
+                    GROUP BY item_id, parse_id
+                ) per_parse
                 GROUP BY item_id
-            ) t
-            WHERE avg_daily > %s
-            """,
-            (
-                list(item_ids),
-                parsed_at,
-                lookback_days,
-                parsed_at,
-                float(min_avg_daily),
-            ),
-        )
-        return {int(r[0]) for r in cur.fetchall()}
-
-
-def insert_item_market_activity(
-    conn: Connection,
-    rows: Sequence[tuple[int, int, int, float, float]],
-) -> None:
-    """rows: (parse_id, ah_id, item_id, median_pct, hotness_pct)"""
-    if not rows:
-        return
-    by_parse: dict[int, list[tuple]] = {}
-    for row in rows:
-        by_parse.setdefault(int(row[0]), []).append(row)
-    sql = (
-        "INSERT INTO item_market_activity "
-        "(parse_id, ah_id, item_id, median_pct, hotness_pct, parsed_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s) "
-        "ON CONFLICT (ah_id, item_id, parse_id, parsed_at) DO UPDATE SET "
-        "median_pct = EXCLUDED.median_pct, "
-        "hotness_pct = EXCLUDED.hotness_pct"
-    )
+            ) liq
+            WHERE avg_listed > %s
+        ) liquid ON liquid.item_id = c.item_id
+        INNER JOIN (
+            SELECT parse_id, item_id, SUM(amount)::bigint AS listed
+            FROM {aggr}
+            GROUP BY parse_id, item_id
+        ) l
+            ON l.parse_id = c.parse_id
+           AND l.item_id = c.item_id
+           AND l.listed > 0
+        LEFT JOIN (
+            SELECT parse_id, item_id, SUM(amount)::bigint AS sold
+            FROM {trans}
+            GROUP BY parse_id, item_id
+        ) s
+            ON s.parse_id = c.parse_id
+           AND s.item_id = c.item_id
+        INNER JOIN LATERAL (
+            SELECT
+                SUM(m.median * m.tx_count)::float8
+                    / NULLIF(SUM(m.tx_count), 0) AS avg5d
+            FROM item_transaction_stats m
+            WHERE m.ah_id = c.ah_id
+              AND m.item_id = c.item_id
+              AND m.parsed_at >= c.parsed_at - make_interval(days => %s)
+              AND m.parsed_at < c.parsed_at
+        ) a ON a.avg5d IS NOT NULL AND a.avg5d > 0
+        WHERE c.ah_id = %s
+          AND NOT EXISTS (
+            SELECT 1
+            FROM item_market_activity x
+            WHERE x.ah_id = c.ah_id
+              AND x.item_id = c.item_id
+              AND x.parse_id = c.parse_id
+              AND x.parsed_at = c.parsed_at
+          )
+        """
     with conn.cursor() as cur:
-        for parse_id, group in by_parse.items():
-            parsed_at = _parsed_at_for(conn, parse_id)
-            payload = [(*row, parsed_at) for row in group]
-            for batch in _batched(payload):
-                cur.executemany(sql, batch)
+        cur.execute(sql, (float(min_avg_listed), lookback_days, house_id))
+        n = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
     conn.commit()
+    return int(n)

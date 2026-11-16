@@ -31,6 +31,7 @@ from wowahf.db.migrations import (
     m028_recalc_inflation,
     m029_item_median_delta,
     m030_item_market_activity,
+    m031_recalc_market_activity,
 )
 
 ALL = [
@@ -64,4 +65,5 @@ ALL = [
     m028_recalc_inflation,
     m029_item_median_delta,
     m030_item_market_activity,
+    m031_recalc_market_activity,
 ]

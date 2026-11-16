@@ -5,25 +5,19 @@ from psycopg import Connection
 
 from wowahf.db.connection import connect
 from wowahf.db.writes import (
+    backfill_item_market_activity_house,
     has_unrecoverable_parse_gap,
     insert_market_depths,
     insert_market_prices,
     insert_market_spreads,
     insert_market_stats,
-    insert_item_market_activity,
     insert_item_transaction_stats,
-    item_market_activity_exists,
     list_house_ids,
     list_parse_ids,
-    load_item_listed_units,
-    load_item_sold_units,
-    load_item_tx_medians,
-    load_liquid_item_ids,
     load_market_depths,
     load_market_prices,
     load_raw_for_parse,
     load_trans_for_parse,
-    load_tx_weighted_avg_medians,
     market_depth_exists,
     market_price_exists,
     market_spread_exists,
@@ -36,14 +30,12 @@ from wowahf.pipeline.backfill_trans import backfill_missing_transactions
 from wowahf.pipeline.normalize import unit_price
 from wowahf.pipeline.schedule import delta_metrics_ok
 from wowahf.stats.crunch import (
-    hotness_pct,
     inflation_rate,
     item_market_features,
     item_transaction_stats,
     listing_count_filtered,
     market_value_total,
     market_value_trans,
-    median_delta_pct,
     sold_unique_items,
     turnover_rate,
     turnover_volume,
@@ -474,45 +466,29 @@ def run_item_transaction_stats() -> None:
 
 def run_item_market_activity() -> None:
     """
-    Backfill median_pct + hotness_pct for liquid item-markets.
+    Bulk-fill median_pct + hotness_pct per AH (one SQL each).
 
-    Liquid = avg daily listed units over the prior 5 days > 200.
-    Hotness = sold_units / listed_units * 100 for the current parse.
+    Liquid = AVG(listed units per parse) > 200. Hotness = sold/listed * 100.
     """
-
-    def work(conn: Connection, house_id: int, parse_id: int) -> int:
-        if item_market_activity_exists(conn, parse_id, house_id):
-            return 0
-        current = load_item_tx_medians(conn, house_id, parse_id)
-        if not current:
-            return 0
-        parsed_at = parsed_at_for(conn, parse_id)
-        candidates = list(current.keys())
-        liquid = load_liquid_item_ids(conn, house_id, parsed_at, candidates)
-        if not liquid:
-            return 0
-        avg5d = load_tx_weighted_avg_medians(
-            conn, house_id, list(liquid), parsed_at
+    log("stats_item_market_activity: started")
+    conn = connect()
+    try:
+        house_ids = list_house_ids(conn)
+        written = 0
+        for house_id in house_ids:
+            if stop_requested():
+                log("stats_item_market_activity: stop requested, aborting")
+                break
+            n = backfill_item_market_activity_house(conn, house_id)
+            written += n
+            log(f"stats_item_market_activity: house={house_id} rows={n}")
+        log(
+            f"stats_item_market_activity: finished houses={len(house_ids)} "
+            f"rows_written={written}"
         )
-        listed = load_item_listed_units(conn, house_id, parse_id)
-        sold = load_item_sold_units(conn, house_id, parse_id)
-        rows: list[tuple[int, int, int, float, float]] = []
-        for item_id in liquid:
-            median = current.get(item_id)
-            base = avg5d.get(item_id)
-            if median is None or base is None:
-                continue
-            m_pct = median_delta_pct(median, base)
-            h_pct = hotness_pct(int(sold.get(item_id, 0)), int(listed.get(item_id, 0)))
-            if m_pct is None or h_pct is None:
-                continue
-            rows.append((parse_id, house_id, item_id, m_pct, h_pct))
-        if not rows:
-            return 0
-        insert_item_market_activity(conn, rows)
-        return len(rows)
+    finally:
+        conn.close()
 
-    _run_named("stats_item_market_activity", work)
 
 
 # Ordered chain after parse / on startup.
