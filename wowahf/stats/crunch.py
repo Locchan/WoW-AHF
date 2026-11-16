@@ -477,3 +477,10 @@ def median_delta_pct(current_median: int, avg5d: float) -> float | None:
     if avg5d <= 0:
         return None
     return float(np.round((current_median - avg5d) * 100.0 / avg5d, 2))
+
+
+def hotness_pct(sold_units: int, listed_units: int) -> float | None:
+    """Sold units as % of units currently listed (market turnover heat)."""
+    if listed_units <= 0:
+        return None
+    return float(np.round(sold_units * 100.0 / listed_units, 2))
