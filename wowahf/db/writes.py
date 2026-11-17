@@ -991,14 +991,33 @@ def backfill_commodity_market_activity_house(
     lookback_days: int = MARKET_ACTIVITY_LOOKBACK_DAYS,
 ) -> int:
     """
-    Fill missing commodity_market_activity rows for one AH in a single SQL.
+    Fill missing commodity_market_activity rows for one AH.
 
-    Commodities only (items.is_commodity). Liquid = AVG(listed per parse) > min.
-    median_pct = vs tx-weighted median over the prior ``lookback_days``.
-    hotness_pct = sold_units / listed_units * 100 for the parse.
+    One INSERT per missing parse_id (keeps each statement small). Commodities
+    only; liquid = AVG(listed per parse) > min; hotness = sold/listed * 100.
     """
     aggr = aggr_table(house_id)
     trans = trans_table(house_id)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT c.parse_id
+            FROM item_transaction_stats c
+            WHERE c.ah_id = %s
+              AND NOT EXISTS (
+                SELECT 1
+                FROM commodity_market_activity x
+                WHERE x.ah_id = c.ah_id
+                  AND x.parse_id = c.parse_id
+              )
+            ORDER BY 1
+            """,
+            (house_id,),
+        )
+        missing_parses = [int(r[0]) for r in cur.fetchall()]
+    if not missing_parses:
+        return 0
+
     sql = f"""
         INSERT INTO commodity_market_activity
             (parsed_at, parse_id, ah_id, item_id, median_pct, hotness_pct)
@@ -1027,20 +1046,19 @@ def backfill_commodity_market_activity_house(
             WHERE avg_listed > %s
         ) liquid ON liquid.item_id = c.item_id
         INNER JOIN (
-            SELECT parse_id, item_id, SUM(amount)::bigint AS listed
+            SELECT item_id, SUM(amount)::bigint AS listed
             FROM {aggr}
-            GROUP BY parse_id, item_id
+            WHERE parse_id = %s
+            GROUP BY item_id
         ) l
-            ON l.parse_id = c.parse_id
-           AND l.item_id = c.item_id
+            ON l.item_id = c.item_id
            AND l.listed > 0
         LEFT JOIN (
-            SELECT parse_id, item_id, SUM(amount)::bigint AS sold
+            SELECT item_id, SUM(amount)::bigint AS sold
             FROM {trans}
-            GROUP BY parse_id, item_id
-        ) s
-            ON s.parse_id = c.parse_id
-           AND s.item_id = c.item_id
+            WHERE parse_id = %s
+            GROUP BY item_id
+        ) s ON s.item_id = c.item_id
         INNER JOIN LATERAL (
             SELECT
                 SUM(m.median * m.tx_count)::float8
@@ -1052,17 +1070,23 @@ def backfill_commodity_market_activity_house(
               AND m.parsed_at < c.parsed_at
         ) a ON a.avg5d IS NOT NULL AND a.avg5d > 0
         WHERE c.ah_id = %s
-          AND NOT EXISTS (
-            SELECT 1
-            FROM commodity_market_activity x
-            WHERE x.ah_id = c.ah_id
-              AND x.item_id = c.item_id
-              AND x.parse_id = c.parse_id
-              AND x.parsed_at = c.parsed_at
-          )
+          AND c.parse_id = %s
         """
-    with conn.cursor() as cur:
-        cur.execute(sql, (float(min_avg_listed), lookback_days, house_id))
-        n = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
-    conn.commit()
-    return int(n)
+    written = 0
+    for parse_id in missing_parses:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    float(min_avg_listed),
+                    parse_id,
+                    parse_id,
+                    lookback_days,
+                    house_id,
+                    parse_id,
+                ),
+            )
+            n = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
+        conn.commit()
+        written += int(n)
+    return written
