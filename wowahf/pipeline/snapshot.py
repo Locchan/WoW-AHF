@@ -179,6 +179,15 @@ def iter_snapshot_houses_at(path: Path) -> Iterator[dict[str, Any]]:
             yield house
 
 
+def snapshot_house_ids(path: Path) -> set[int]:
+    """House ids present in a gzip snapshot (streams; discards listing payloads)."""
+    ids: set[int] = set()
+    with open_snapshot_path(path) as f:
+        for house in ijson.items(f, "data.houses.item"):
+            ids.add(int(house["id"]))
+    return ids
+
+
 def iter_snapshot_houses(parse_id: int) -> Iterator[dict[str, Any]]:
     return iter_snapshot_houses_at(snapshot_path(parse_id))
 

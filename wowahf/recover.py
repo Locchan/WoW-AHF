@@ -11,14 +11,18 @@ from wowahf.db.writes import (
     list_incomplete_parse_ids,
     purge_parse_data,
 )
-from wowahf.pipeline.import_snapshots import import_missing_snapshots
+from wowahf.pipeline.import_snapshots import (
+    import_missing_snapshots,
+    reingest_missed_snapshots,
+)
 from wowahf.pipeline.snapshot import delete_snapshot, snapshot_exists
 from wowahf.utils.log import log
 
 
 def recover_after_restart() -> None:
     """
-    Import every on-disk snapshot missing from the DB, purge incomplete parse
+    Import every on-disk snapshot missing from the DB, re-ingest incomplete
+    ok parses (partial house coverage after deadlocks), purge incomplete parse
     rows that have no snapshot, and clear incomplete job_runs.
     """
     conn = connect()
@@ -31,9 +35,16 @@ def recover_after_restart() -> None:
         except Exception as exc:
             log(f"recover: snapshot import failed: {exc}")
 
+        try:
+            reingested = reingest_missed_snapshots(conn, now=now)
+            if reingested:
+                log(f"recover: reingested missed parse_ids={reingested}")
+        except Exception as exc:
+            log(f"recover: missed reingest failed: {exc}")
+
         for parse_id in list_incomplete_parse_ids(conn):
             if snapshot_exists(parse_id):
-                # import_missing should have fixed these; leave for next parse.
+                # import_missing / reingest should have fixed these.
                 continue
             log(
                 f"recover: purging incomplete parse_id={parse_id} "

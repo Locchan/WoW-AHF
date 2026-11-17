@@ -1,9 +1,24 @@
+import time
+from collections.abc import Callable
+from typing import TypeVar
+
 import psycopg
 from psycopg import Connection
+from psycopg.errors import (
+    DeadlockDetected,
+    LockNotAvailable,
+    SerializationFailure,
+)
 from psycopg.rows import tuple_row
 
 from wowahf import utils
 from wowahf.utils.config import get_config_entry
+from wowahf.utils.log import log
+
+T = TypeVar("T")
+
+# Transient lock conflicts — not a Postgres outage.
+_TRANSIENT_DB_ERRORS = (DeadlockDetected, SerializationFailure, LockNotAvailable)
 
 
 def _optional(name: str, default: str) -> str:
@@ -55,8 +70,15 @@ def ping() -> None:
         conn.close()
 
 
+def is_transient_db_error(exc: BaseException) -> bool:
+    """Deadlocks / serialization failures — retry, do not pause schedules."""
+    return isinstance(exc, _TRANSIENT_DB_ERRORS)
+
+
 def is_db_unavailable(exc: BaseException) -> bool:
     """True when ``exc`` looks like Postgres/network unavailability."""
+    if is_transient_db_error(exc):
+        return False
     if isinstance(exc, (psycopg.OperationalError, psycopg.InterfaceError)):
         return True
     text = f"{exc.__class__.__name__}: {exc}".lower()
@@ -72,6 +94,49 @@ def is_db_unavailable(exc: BaseException) -> bool:
         "connection timed out",
         "no route to host",
         "network is unreachable",
-        "postgresql",
     )
     return any(n in text for n in needles)
+
+
+def retry_on_transient_db(
+    fn: Callable[[], T],
+    *,
+    attempts: int = 5,
+    base_sleep_s: float = 0.5,
+    label: str = "db",
+) -> T:
+    """Run ``fn``; on deadlock/serialization, rollback-friendly retry."""
+    last: BaseException | None = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except _TRANSIENT_DB_ERRORS as exc:
+            last = exc
+            if i + 1 >= attempts:
+                break
+            sleep_s = base_sleep_s * (2**i)
+            log(
+                f"{label}: transient DB error ({exc.__class__.__name__}), "
+                f"retry {i + 1}/{attempts} in {sleep_s:.1f}s"
+            )
+            time.sleep(sleep_s)
+    assert last is not None
+    raise last
+
+
+# Advisory lock key for serializing snapshot ingest across jobs/threads.
+INGEST_ADVISORY_LOCK_KEY = 0x776F7761  # 'wowa'
+
+
+def acquire_ingest_lock(conn: Connection) -> None:
+    """Block until this session holds the global ingest advisory lock."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_lock(%s)", (INGEST_ADVISORY_LOCK_KEY,))
+
+
+def release_ingest_lock(conn: Connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_advisory_unlock(%s)", (INGEST_ADVISORY_LOCK_KEY,)
+        )
+
