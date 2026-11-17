@@ -26,7 +26,6 @@ from wowahf.pipeline.snapshot import (
     bind_pending_to_parse,
     iter_snapshot_houses_at,
     list_snapshot_files,
-    snapshot_house_ids,
 )
 from wowahf.utils.http_date import naive_utc_second
 from wowahf.utils.log import log
@@ -115,30 +114,42 @@ def _raw_house_ids_for_parse(conn: Connection, parse_id: int) -> set[int]:
 
 def list_missed_snapshot_parses(conn: Connection) -> list[SnapshotFile]:
     """
-    Disk snapshots that never finished ingest: not ok, or missing raw houses
-    that are present in the gzip (typical after deadlock mid-import).
+    Disk snapshots that never finished ingest: not ok, or fewer raw houses
+    than a complete sibling parse (typical after deadlock mid-import).
+
+    Uses DB house counts only (no gzip scan) against the max raw-house count
+    among ok parses that still have a snapshot on disk.
     """
+    by_id = {
+        int(s.parse_id): s
+        for s in list_snapshot_files()
+        if s.parse_id is not None and s.path.exists()
+    }
+    if not by_id:
+        return []
+
     ok_ids = list_ok_parse_ids(conn)
+    raw_counts: dict[int, int] = {}
+    for parse_id in by_id:
+        raw_counts[parse_id] = len(_raw_house_ids_for_parse(conn, parse_id))
+
+    complete_n = max(
+        (raw_counts[pid] for pid in by_id if pid in ok_ids),
+        default=0,
+    )
     missed: list[SnapshotFile] = []
-    for snap in list_snapshot_files():
-        if snap.parse_id is None or not snap.path.exists():
-            continue
-        parse_id = int(snap.parse_id)
+    for parse_id, snap in sorted(by_id.items()):
         if parse_id not in ok_ids:
+            log(f"reingest: parse_id={parse_id} not ok")
             missed.append(snap)
             continue
-        snap_houses = snapshot_house_ids(snap.path)
-        if not snap_houses:
-            continue
-        raw_houses = _raw_house_ids_for_parse(conn, parse_id)
-        missing = snap_houses - raw_houses
-        if missing:
+        n = raw_counts.get(parse_id, 0)
+        if complete_n > 0 and n < complete_n:
             log(
                 f"reingest: parse_id={parse_id} incomplete raw "
-                f"missing_houses={sorted(missing)}"
+                f"houses={n} expected>={complete_n}"
             )
             missed.append(snap)
-    missed.sort(key=lambda s: int(s.parse_id or 0))
     return missed
 
 
