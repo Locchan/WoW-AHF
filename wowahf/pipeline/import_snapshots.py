@@ -144,12 +144,14 @@ def list_missed_snapshot_parses(conn: Connection) -> list[SnapshotFile]:
             missed.append(snap)
             continue
         n = raw_counts.get(parse_id, 0)
-        if complete_n > 0 and n < complete_n:
-            log(
-                f"reingest: parse_id={parse_id} incomplete raw "
-                f"houses={n} expected>={complete_n}"
-            )
-            missed.append(snap)
+        # n==0 means raw already purged by retention — not an incomplete ingest.
+        if n == 0 or complete_n <= 0 or n >= complete_n:
+            continue
+        log(
+            f"reingest: parse_id={parse_id} incomplete raw "
+            f"houses={n} expected>={complete_n}"
+        )
+        missed.append(snap)
     return missed
 
 
