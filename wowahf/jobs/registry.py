@@ -1,13 +1,12 @@
 from datetime import timedelta
 
 from wowahf.events.run import run_event_health
-from wowahf.items.run import run_item_names
 from wowahf.jobs.manager import Job, JobManager
 from wowahf.pipeline.run import run_parse
-from wowahf.pipeline.schedule import parse_due_at
 from wowahf.stats.run import STATS_JOBS
 
-ITEMS_INTERVAL = timedelta(minutes=10)
+# Poll shared parses/ for new fetcher gzips.
+PARSE_POLL_INTERVAL = timedelta(minutes=1)
 EVENT_HEALTH_INTERVAL = timedelta(minutes=10)
 
 
@@ -18,8 +17,9 @@ def build_job_manager() -> JobManager:
         Job(
             name="parse",
             fn=run_parse,
-            due_at=parse_due_at,
+            interval=PARSE_POLL_INTERVAL,
             chain=(first_stats,),
+            run_on_startup=True,
         )
     )
     for i, (name, fn) in enumerate(STATS_JOBS):
@@ -33,14 +33,6 @@ def build_job_manager() -> JobManager:
                 run_on_startup=(i == 0),
             )
         )
-    mgr.register(
-        Job(
-            name="items",
-            fn=run_item_names,
-            interval=ITEMS_INTERVAL,
-            run_on_startup=True,
-        )
-    )
     mgr.register(
         Job(
             name="event_health",

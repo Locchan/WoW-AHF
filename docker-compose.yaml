@@ -1,0 +1,43 @@
+services:
+  wow_ahf:
+    image: ${IMAGE:-wow_ahf:latest}
+    pull_policy: never
+    container_name: wow_ahf
+    restart: unless-stopped
+    stop_grace_period: 5m
+    networks:
+      - dockernet
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - type: bind
+        source: /opt/container_storage/wow_ahf
+        target: /mounted
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2048M
+
+  wow_ahf_fetcher:
+    image: ${FETCHER_IMAGE:-wow_ahf_fetcher:latest}
+    pull_policy: never
+    container_name: wow_ahf_fetcher
+    restart: unless-stopped
+    stop_grace_period: 30m
+    networks:
+      - dockernet
+    volumes:
+      - type: bind
+        source: /opt/container_storage/wow_ahf
+        target: /mounted
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1536M
+
+networks:
+  dockernet:
+    name: dockernet
+    external: true

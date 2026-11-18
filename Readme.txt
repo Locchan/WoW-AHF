@@ -52,24 +52,24 @@ Tables:
     - ah_trans_{houseId} — …, is_commodity, lots (hypertable)
     - ah_watch_{houseId} — auc_id, first_time_left, short_seen_at, active
 
-Item names come from static-forever /data/wow/item/{id}. A separate items
-job every 10 minutes resolves up to 100 pending and 100 previously-missing
-ids (oldest updated_at first). 404s stay name_status=missing and are
-retried on later passes. is_commodity is learned from which AH feed an
-item_id appears on, stored in items, and copied onto raw rows for only the
-item_ids seen this parse.
+is_commodity is learned from which AH feed an item_id appears on, stored in
+items, and copied onto raw rows for only the item_ids seen this parse.
 
 price is buyout for normal auctions and unit_price for commodities.
 Bid-only auctions (no buyout) are skipped.
 
-main.py migrates once, then starts a threaded JobManager (wowahf/jobs):
-    - parse — due at max(LM + 1h10m, last attempt + 10m). Skips when LM has
-      not advanced. Reserves parses.id first, downloads the AH dump to a gzip
-      snapshot under /mounted/parses/parse_<id>.json.gz, then ingests from that
-      file. On failure the parse id and complete gzip are kept for recovery;
-      table rows are cleared. On startup, incomplete parses with a snapshot are
-      re-ingested (later delta metrics invalidated); those without a snapshot
-      are purged. Keeps at most 48 gzip snapshots. Chains stats on success.
+Two containers share /mounted (config + parses/):
+    - wow_ahf_fetcher — Blizzard download only. Due at last on-disk LM + 1h10m;
+      downloads to /tmp, and if Last-Modified advanced, atomically publishes
+      pending_<lm>.json.gz into parses/ (.partial then rename). If LM is
+      unchanged, retries every 10 minutes. Never talks to Postgres.
+    - wow_ahf — migrates, recovers, imports complete gzips, runs stats.
+      Ignores *.partial and unreadable mid-copy files.
+
+main.py (wow_ahf) starts a threaded JobManager (wowahf/jobs):
+    - parse — every 1 minute (and on startup): import any complete on-disk
+      snapshots missing from the DB; chains stats on success. Keeps at most
+      48 gzip snapshots (also cleaned by the fetcher after publish).
     - stats_* — one job per metric, chained in order (startup + after parse):
         market_value_total → listing_count → volume_total → unique_items →
         backfill_trans → market_value_trans → turnover_volume →
@@ -77,7 +77,6 @@ main.py migrates once, then starts a threaded JobManager (wowahf/jobs):
         market_spread → inflation_rate → item_transaction
       backfill_trans recomputes missing ah_trans for prior ok parses when
       prev raw is still kept and the failure-gated delta rules allow it.
-    - items — on startup and every 10 minutes after each finish
     - event_health — every 10 minutes: pg_cron job presence/active +
       schema_event_runs outcomes / overdue
 Jobs run in their own threads; a job already running is not re-spawned.

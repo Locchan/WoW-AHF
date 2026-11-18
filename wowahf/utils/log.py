@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import os
 import shutil
 import threading
 from datetime import UTC, datetime
@@ -11,7 +12,9 @@ from typing import TextIO
 from wowahf.utils import DATA_DIR
 
 LOG_DIR = DATA_DIR / "logs"
-LOG_FILE = LOG_DIR / "wow_ahf.log"
+# Fetcher sets WOW_AHF_LOG_STEM=wow_ahf_fetcher so logs stay separate.
+LOG_STEM = os.environ.get("WOW_AHF_LOG_STEM", "wow_ahf")
+LOG_FILE = LOG_DIR / f"{LOG_STEM}.log"
 
 _lock = threading.Lock()
 _file: TextIO | None = None

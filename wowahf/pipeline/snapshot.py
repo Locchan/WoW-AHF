@@ -74,26 +74,15 @@ def _house_jsonable(house: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def write_snapshot(
+def _stream_snapshot_gz(
+    partial: Path,
+    path: Path,
     last_modified: datetime,
     houses: Iterator[dict[str, Any]],
     *,
-    parse_id: int | None = None,
+    parse_id: int | None,
 ) -> Path:
-    """
-    Stream-write gzip JSON
-    {"date", "parse_id", "data": {"houses": [...]}}
-    one house at a time so peak RSS stays near a single AH dump.
-
-    With parse_id: write parse_{id}.json.gz.
-    Without: write pending_{lm}.json.gz (DB may be down).
-    """
-    if parse_id is not None:
-        path = snapshot_path(parse_id)
-        partial = snapshot_partial_path(parse_id)
-    else:
-        path = pending_path(last_modified)
-        partial = pending_partial_path(last_modified)
+    """Write gzip to ``partial``, refuse empty, then atomically rename to ``path``."""
     if partial.exists():
         partial.unlink()
     date_s = naive_utc_second(last_modified).isoformat()
@@ -118,14 +107,79 @@ def write_snapshot(
             f"refusing to finalize empty snapshot ({path.name})"
         )
     partial.replace(path)
+    log(f"snapshot: wrote {path.name} houses={count}")
+    return path
+
+
+def write_snapshot(
+    last_modified: datetime,
+    houses: Iterator[dict[str, Any]],
+    *,
+    parse_id: int | None = None,
+) -> Path:
+    """
+    Stream-write gzip JSON
+    {"date", "parse_id", "data": {"houses": [...]}}
+    one house at a time so peak RSS stays near a single AH dump.
+
+    With parse_id: write parse_{id}.json.gz.
+    Without: write pending_{lm}.json.gz (DB may be down).
+    """
+    if parse_id is not None:
+        path = snapshot_path(parse_id)
+        partial = snapshot_partial_path(parse_id)
+    else:
+        path = pending_path(last_modified)
+        partial = pending_partial_path(last_modified)
+    result = _stream_snapshot_gz(
+        partial, path, last_modified, houses, parse_id=parse_id
+    )
     plain = snapshot_dir() / (
         f"parse_{parse_id}.json"
         if parse_id is not None
         else f"pending_{lm_token(last_modified)}.json"
     )
     plain.unlink(missing_ok=True)
-    log(f"snapshot: wrote {path.name} houses={count}")
-    return path
+    return result
+
+
+def write_snapshot_to_dir(
+    dest_dir: Path,
+    last_modified: datetime,
+    houses: Iterator[dict[str, Any]],
+    *,
+    name_prefix: str = "pending",
+) -> Path:
+    """
+    Write ``{name_prefix}_{lm}.json.gz`` under ``dest_dir`` (e.g. /tmp).
+
+    Uses a sibling ``.partial`` then rename so readers never see a half file.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    token = lm_token(last_modified)
+    path = dest_dir / f"{name_prefix}_{token}.json.gz"
+    partial = dest_dir / f"{name_prefix}_{token}.json.gz.partial"
+    return _stream_snapshot_gz(
+        partial, path, last_modified, houses, parse_id=None
+    )
+
+
+def snapshot_file_ready(path: Path) -> bool:
+    """
+    True when ``path`` is a complete gzip snapshot safe to ingest.
+
+    Rejects ``*.partial`` and files that do not yet parse as valid meta
+    (still being copied / truncated).
+    """
+    if not path.is_file():
+        return False
+    if path.name.endswith(".partial"):
+        return False
+    try:
+        load_snapshot_meta_at(path)
+    except Exception:
+        return False
+    return True
 
 
 def open_snapshot_path(path: Path):
@@ -252,6 +306,9 @@ def list_snapshot_files() -> list[SnapshotFile]:
         if not path.is_file():
             continue
         if path.name.endswith(".partial"):
+            continue
+        # Skip files still being copied (unreadable / truncated gzip).
+        if not snapshot_file_ready(path):
             continue
         snap = _snapshot_from_path(path)
         if snap is not None:

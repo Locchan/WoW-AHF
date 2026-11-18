@@ -1,0 +1,11 @@
+ARG BASE_IMAGE=wow_ahf-base:latest
+FROM ${BASE_IMAGE}
+
+WORKDIR /app
+
+COPY wowahf ./wowahf
+COPY fetcher ./fetcher
+
+ENV WOW_AHF_LOG_STEM=wow_ahf_fetcher
+
+CMD ["python", "-m", "fetcher"]
