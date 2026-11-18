@@ -52,24 +52,23 @@ def _gzip_log_file(path: Path) -> Path | None:
 
 def rotate_previous_logs() -> list[Path]:
     """
-    Gzip leftover plain logs from earlier container runs.
+    Gzip leftover plain log for this process stem from earlier runs.
 
-    Keeps archived ``*.log.gz`` files; starts a fresh ``wow_ahf.log`` after.
+    Only touches ``{LOG_STEM}.log`` so sibling containers sharing logs/
+    do not archive each other's active files.
     """
     rotated: list[Path] = []
     if not LOG_DIR.is_dir():
         return rotated
-    for path in sorted(LOG_DIR.iterdir()):
-        if not path.is_file():
-            continue
-        if path.suffix == ".gz" or not path.name.endswith(".log"):
-            continue
-        try:
-            dest = _gzip_log_file(path)
-        except OSError:
-            continue
-        if dest is not None:
-            rotated.append(dest)
+    path = LOG_FILE
+    if not path.is_file():
+        return rotated
+    try:
+        dest = _gzip_log_file(path)
+    except OSError:
+        return rotated
+    if dest is not None:
+        rotated.append(dest)
     return rotated
 
 
