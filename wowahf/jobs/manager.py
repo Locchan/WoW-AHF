@@ -306,17 +306,34 @@ class JobManager:
         log("jobs: scheduler stopped")
 
     def wait_forever(self) -> None:
-        """Block until stop is requested, then join active job threads."""
+        """
+        Block until stop is requested, then join active job threads.
+
+        The parse job is waited on without a deadline so an in-flight Blizzard
+        download can finish and land a durable gzip before the process exits.
+        Other jobs keep a 2-minute join budget.
+        """
         while not stop_requested():
             wait(0.5)
         log("jobs: stop requested, waiting for running jobs")
         deadline = _utc_now() + timedelta(minutes=2)
+        logged_parse_wait = False
         while True:
             with self._lock:
                 alive = [t for t in self._threads if t.is_alive()]
                 self._threads = alive
             if not alive:
                 break
+            parse_alive = [t for t in alive if t.name == "job-parse"]
+            if parse_alive:
+                if not logged_parse_wait:
+                    log(
+                        "jobs: parse still running — waiting for download "
+                        "to finish (no timeout)"
+                    )
+                    logged_parse_wait = True
+                parse_alive[0].join(timeout=0.5)
+                continue
             if _utc_now() >= deadline:
                 log(f"jobs: giving up on {len(alive)} still-running thread(s)")
                 break

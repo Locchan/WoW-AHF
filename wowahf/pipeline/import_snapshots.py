@@ -209,6 +209,77 @@ def reingest_missed_snapshots(
     return imported
 
 
+def force_reingest_parse_range(
+    conn: Connection,
+    start_id: int,
+    end_id: int,
+    *,
+    now: datetime | None = None,
+    invalidate: bool = False,
+) -> list[int]:
+    """
+    Force re-ingest ok parses in [start_id, end_id] from on-disk gzips.
+
+    Use when raw was pruned but snapshots remain and ah_trans is empty
+    (e.g. mid-outage chain). Sequential order restores prev raw for sale
+    inference. Does not wipe later parses' trans unless invalidate=True.
+    """
+    from wowahf.db.writes import delete_delta_metrics, list_house_ids
+    from wowahf.pipeline.snapshot import snapshot_path
+
+    now = now or datetime.now(UTC)
+    imported: list[int] = []
+    acquire_ingest_lock(conn)
+    try:
+        for parse_id in range(int(start_id), int(end_id) + 1):
+            if stop_requested():
+                break
+            path = snapshot_path(parse_id)
+            if not path.exists():
+                log(f"force_reingest: skip parse_id={parse_id} (no gzip)")
+                continue
+            log(f"force_reingest: parse_{parse_id}.json.gz → parse_id={parse_id}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            retry_on_transient_db(
+                lambda pid=parse_id, p=path: ingest_snapshot(
+                    conn,
+                    pid,
+                    now=now,
+                    houses=iter_snapshot_houses_at(p),
+                ),
+                label=f"force_reingest parse_id={parse_id}",
+            )
+            imported.append(parse_id)
+    finally:
+        release_ingest_lock(conn)
+
+    if not imported:
+        log("force_reingest: nothing reingested")
+        return []
+
+    if invalidate:
+        invalidate_metrics_from(conn, min(imported))
+    else:
+        # Refresh delta stats / ITS / CMA only for the reingested window.
+        house_ids = list_house_ids(conn)
+        for parse_id in imported:
+            for house_id in house_ids:
+                delete_delta_metrics(conn, parse_id, house_id)
+        log(
+            f"force_reingest: cleared delta metrics for "
+            f"parse_ids={imported[0]}..{imported[-1]}"
+        )
+
+    log(
+        f"force_reingest: finished n={len(imported)} "
+        f"parse_ids={imported[0]}..{imported[-1]}"
+    )
+    return imported
+
+
 def _resolve_for_import(
     conn: Connection, snap: SnapshotFile, ok_ids: set[int]
 ) -> tuple[int, Path] | None:

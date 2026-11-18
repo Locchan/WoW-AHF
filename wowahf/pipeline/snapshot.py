@@ -112,6 +112,11 @@ def write_snapshot(
             first = False
             count += 1
         f.write("]}}")
+    if count < 1:
+        partial.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"refusing to finalize empty snapshot ({path.name})"
+        )
     partial.replace(path)
     plain = snapshot_dir() / (
         f"parse_{parse_id}.json"

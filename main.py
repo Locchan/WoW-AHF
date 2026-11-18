@@ -2,12 +2,13 @@ from wowahf.db.connection import connect
 from wowahf.db.migrate import migrate
 from wowahf.jobs import build_job_manager
 from wowahf.recover import recover_after_restart
-from wowahf.utils.log import log
+from wowahf.utils.log import log, setup_logging
 from wowahf.utils.shutdown import install_signal_handlers
 
 
 if __name__ == "__main__":
     install_signal_handlers()
+    setup_logging()
     log("scheduler: ready (SIGTERM/SIGINT will shut down cleanly)")
 
     log("scheduler: running migrations")
