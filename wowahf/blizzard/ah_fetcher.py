@@ -24,6 +24,9 @@ _EMPTY_INDEX_GIVE_UP_S = 900.0  # ~15m of empty index → treat as no data
 
 _RETRYABLE_HTTP = frozenset({408, 425, 429, 500, 502, 503, 504})
 
+# Forever AH routes often 404 on HEAD while GET works; remember after first miss.
+_ah_head_unsupported = False
+
 
 class BlizzardHttpError(RuntimeError):
     """HTTP failure from the Blizzard API (may be retryable)."""
@@ -294,27 +297,47 @@ class BlizzardApiClient:
     def head_last_modified(
         self, path: str, namespace: str, *, trailing_slash: bool = False
     ) -> datetime | None:
-        """Last-Modified via HEAD (falls back to GET-discard if HEAD unsupported)."""
-        try:
-            _status, headers, _body = self.request_resilient(
-                path,
-                namespace,
-                method="HEAD",
-                trailing_slash=trailing_slash,
-                read_body=False,
-                label=f"HEAD {path}",
-            )
-            return parse_http_date(headers.get("last-modified"))
-        except BlizzardHttpError as exc:
-            if exc.code not in (405, 501):
-                raise
+        """
+        Last-Modified for an AH dump.
+
+        Tries HEAD first; Forever endpoints often answer 404 to HEAD while GET
+        works, so any non-success HEAD falls back to GET (body discarded).
+        After the first HEAD failure for this process, skip straight to GET.
+        """
+        global _ah_head_unsupported
+        if not _ah_head_unsupported:
+            try:
+                _status, headers, _body = self.request_resilient(
+                    path,
+                    namespace,
+                    method="HEAD",
+                    trailing_slash=trailing_slash,
+                    read_body=False,
+                    label=f"HEAD {path}",
+                )
+                lm = parse_http_date(headers.get("last-modified"))
+                if lm is not None:
+                    return lm
+            except BlizzardHttpError as exc:
+                # 404/405/501: HEAD not usable on this API. Other codes retry
+                # via request_resilient; if we still get here, fall back to GET.
+                if exc.code not in (404, 405, 501) and exc.code < 500:
+                    raise
+                _ah_head_unsupported = True
+                log(
+                    "blizzard: HEAD unusable for AH dumps "
+                    f"(HTTP {exc.code}); using GET for Last-Modified"
+                )
+            else:
+                # HEAD 200 but no Last-Modified — still need GET.
+                pass
         _status, headers, body = self.request_resilient(
             path,
             namespace,
             method="GET",
             trailing_slash=trailing_slash,
             read_body=True,
-            label=f"GET(fallback) {path}",
+            label=f"GET(lm) {path}",
         )
         del body
         return parse_http_date(headers.get("last-modified"))
@@ -454,10 +477,10 @@ def _max_lm(
 
 def peek_ah_last_modified(api: BlizzardApiClient | None = None) -> datetime | None:
     """
-    Newest Last-Modified across houses via HEAD (no listing bodies).
+    Newest Last-Modified across houses (HEAD when usable, else GET).
 
     Returns None when the auctions index is empty after sustained retries
-    (Blizzard no-data). Individual house HEADs retry forever.
+    (Blizzard no-data). Per-house fetch retries forever on transient errors.
     """
     api = api or get_blizzard_api_obj()
     houses = get_auction_houses(api, require_nonempty=True).get("auctions") or []

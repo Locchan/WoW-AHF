@@ -32,7 +32,7 @@ def _download_retry_sleep(attempt: int, exc: BaseException) -> None:
 
 def _ensure_snapshot_on_disk() -> datetime | None:
     """
-    Peek Blizzard LM (HEAD only) and download to pending gzip until durable.
+    Peek Blizzard LM and download to pending gzip until durable.
 
     Ignores stop_requested — must finish once Blizzard has a new dump.
     Returns the snapshot LM, or None when Blizzard has no auction data.
